@@ -969,10 +969,10 @@
           const center = sphere && sphere.center ? sphere.center : [0, 0, 0];
           const radius = Math.max(18, sphere && Number.isFinite(sphere.radius) ? sphere.radius : SIM.initialSpread);
           if (camera && typeof camera.getInvariantFocus === "function") {
-            return camera.getInvariantFocus(center, radius * 1.22, dir, up);
+            return camera.getInvariantFocus(center, radius * 0.75, dir, up);
           }
           if (camera && typeof camera.getFocus === "function") {
-            return camera.getFocus(center, radius * 1.22);
+            return camera.getFocus(center, radius * 0.75);
           }
           return canvas3d.camera.getSnapshot();
         }
@@ -1139,7 +1139,11 @@
       state.busy = true;
       try {
         setStatus("Reseeding coarse-grained fragments...");
+        const oldStructures = state.activeStructures.slice();
         reseedSystem();
+        if (oldStructures.length) {
+          await state.viewer.plugin.managers.structure.hierarchy.remove(oldStructures, true);
+        }
         await queueDraw(true);
         lockFixedCameraView();
         updateHud();
