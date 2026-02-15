@@ -10,10 +10,10 @@
     maxResidues: 30,
     frameMs: 12,
     substepsPerFrame: 2,
-    renderIntervalMs: 33,
-    minRenderIntervalMs: 16,
-    maxRenderIntervalMs: 100,
-    renderAtomMode: "mixed",
+    renderIntervalMs: 150,
+    minRenderIntervalMs: 50,
+    maxRenderIntervalMs: 300,
+    renderAtomMode: "backbone",
     fullAtomRenderEvery: 8,
     totalCycles: 4000,
     initialSpread: 60,
@@ -39,9 +39,7 @@
     tempEnd: 2.8,
     maxForce: 45,
     maxSpeed: 12,
-    maxStep: 0.6,
-    secondaryBiasStart: 0.3,
-    secondaryBiasEnd: 0.9
+    maxStep: 0.6
   };
 
   const SECONDARY_TARGETS = {
@@ -71,9 +69,6 @@
     drawMs: document.getElementById("drawms"),
     pairsPs: document.getElementById("pairsps"),
     acceptance: document.getElementById("acceptance"),
-    bias: document.getElementById("bias"),
-    assembly: document.getElementById("assembly"),
-    phase: document.getElementById("phase"),
     status: document.getElementById("status"),
     toggle: document.getElementById("toggle"),
     reset: document.getElementById("reset")
@@ -90,6 +85,7 @@
     drawBusy: false,
     drawQueued: false,
     drawCount: 0,
+    representationApplied: false,
     lastDrawMs: 0,
     dynamicRenderIntervalMs: SIM.renderIntervalMs,
     cps: 0,
@@ -244,23 +240,12 @@
     return lerp(SIM.tempStart, SIM.tempEnd, smoothstep(p));
   }
 
-  function currentSecondaryBias(p) {
-    return lerp(SIM.secondaryBiasStart, SIM.secondaryBiasEnd, smoothstep(p));
-  }
-
   function currentAttraction(p) {
     return lerp(SIM.attrEpsStart, SIM.attrEpsEnd, smoothstep(p));
   }
 
   function targetRadius(p) {
     return lerp(SIM.initialSpread, SIM.finalSpread, smoothstep(p));
-  }
-
-  function phaseLabel(p) {
-    if (p < 0.2) return "Nucleation";
-    if (p < 0.5) return "Secondary Build";
-    if (p < 0.8) return "Collapse";
-    return "Packing";
   }
 
   function updateCycleRate() {
@@ -466,7 +451,7 @@
     const t0 = performance.now();
     clearForces();
 
-    const secBias = currentSecondaryBias(p);
+    const secBias = 1.0;
     const attr = currentAttraction(p);
     const radiusTarget = targetRadius(p);
     let potential = 0;
@@ -657,23 +642,6 @@
     }
 
     enforceBondConstraints(2);
-  }
-
-  function assemblyMetric() {
-    if (!state.fragments.length) return 0;
-
-    let avgR = 0;
-    let count = 0;
-    for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length; i++) {
-        avgR += norm(frag.ca[i]);
-        count += 1;
-      }
-    }
-
-    avgR /= Math.max(1, count);
-    const t = (SIM.initialSpread - avgR) / (SIM.initialSpread - SIM.finalSpread);
-    return clamp(t, 0, 1);
   }
 
   function frameDirection(t, n, b, u, vComp, w) {
@@ -881,15 +849,15 @@
     const latest = structures.length ? structures[structures.length - 1] : null;
     const components = latest && Array.isArray(latest.components) ? latest.components : [];
 
-    if (components.length) {
+    if (!state.representationApplied && components.length) {
       await plugin.managers.structure.component.removeRepresentations(components);
       await plugin.managers.structure.component.addRepresentation(components, "spacefill");
+      state.representationApplied = true;
     }
     if (previousStructures.length) {
       await plugin.managers.structure.hierarchy.remove(previousStructures, true);
     }
     state.activeStructures = latest ? [latest] : [];
-    plugin.managers.camera.reset(void 0, 0);
     state.drawCount += 1;
     const drawMs = performance.now() - drawStart;
     state.perf.drawMs = ewma(state.perf.drawMs, drawMs, 0.25);
@@ -990,7 +958,6 @@
   function updateHud() {
     const p = progress();
     const temp = currentTemp(p);
-    const sec = currentSecondaryBias(p);
 
     const clashFree = 1 - state.lastMetrics.clashes / state.lastMetrics.totalPairs;
 
@@ -1000,9 +967,6 @@
     if (el.drawMs) el.drawMs.textContent = state.perf.drawMs.toFixed(2);
     if (el.pairsPs) el.pairsPs.textContent = Math.round(state.pairChecksPerSec).toLocaleString();
     if (el.acceptance) el.acceptance.textContent = `${(100 * clamp(clashFree, 0, 1)).toFixed(1)}%`;
-    if (el.bias) el.bias.textContent = `${(100 * sec).toFixed(0)}%`;
-    if (el.assembly) el.assembly.textContent = `${(100 * assemblyMetric()).toFixed(1)}%`;
-    if (el.phase) el.phase.textContent = phaseLabel(p);
   }
 
   function reseedSystem() {
@@ -1017,6 +981,7 @@
     state.drawCount = 0;
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
+    state.representationApplied = false;
     state.fragments = [];
 
     const centers = [];
@@ -1049,7 +1014,10 @@
         integrateFrame();
         updateCycleRate();
         updateHud();
-        await queueDraw(false);
+        queueDraw(false).catch((drawErr) => {
+          console.error(drawErr);
+          setStatus(`Draw failed: ${drawErr && drawErr.message ? drawErr.message : "unknown error"}`);
+        });
         setStatus(
           `Running coarse-grained dynamics. Render ${Math.round(state.dynamicRenderIntervalMs)}ms, ` +
           `compute ${state.perf.computeMs.toFixed(1)}ms, draw ${state.perf.drawMs.toFixed(1)}ms.`
