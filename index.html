@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mol* Fragment Assembly Demo</title>
+  <link rel="stylesheet" href="https://unpkg.com/molstar/build/viewer/molstar.css">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div id="app"></div>
+
+  <aside class="hud">
+    <h1>Fragment Folding / Assembly</h1>
+    <p class="subtitle">Fake Monte Carlo dynamics with phi/psi-biased glycine chains</p>
+
+    <div class="stats">
+      <div><span>Cycle</span><strong id="cycle">0</strong></div>
+      <div><span>Temperature</span><strong id="temperature">0.00</strong></div>
+      <div><span>Acceptance</span><strong id="acceptance">0%</strong></div>
+      <div><span>Secondary Bias</span><strong id="bias">0%</strong></div>
+      <div><span>Assembly</span><strong id="assembly">0%</strong></div>
+      <div><span>Phase</span><strong id="phase">Nucleation</strong></div>
+    </div>
+
+    <div class="controls">
+      <button id="toggle">Pause</button>
+      <button id="reset">Reseed</button>
+    </div>
+    <p id="status" class="status">Loading Mol* viewer...</p>
+  </aside>
+
+  <script src="https://unpkg.com/molstar/build/viewer/molstar.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

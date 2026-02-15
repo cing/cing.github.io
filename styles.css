@@ -1,0 +1,129 @@
+:root {
+  --bg: #05070b;
+  --card: rgba(10, 14, 26, 0.72);
+  --text: #e7edf9;
+  --muted: #95a3bf;
+  --accent: #2fd6a8;
+  --border: rgba(150, 180, 255, 0.2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: radial-gradient(circle at 20% 20%, #101b34 0%, var(--bg) 55%, #04050a 100%);
+  color: var(--text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#app .msp-viewport-controls,
+#app .msp-viewport-top-left-controls,
+#app .msp-layout-top,
+#app .msp-layout-bottom,
+#app .msp-layout-left,
+#app .msp-layout-right,
+#app .msp-sequence,
+#app .msp-toast-container,
+#app .msp-highlight-toast-wrapper,
+#app .msp-overlay-tasks,
+#app .msp-background-tasks,
+#app [class*="msp-viewport-axis"],
+#app [class*="msp-axis"],
+#app [class*="msp-orientation"] {
+  display: none !important;
+}
+
+.hud {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  width: min(360px, calc(100vw - 2rem));
+  padding: 0.9rem 1rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--card);
+  backdrop-filter: blur(8px);
+  z-index: 20;
+}
+
+.hud h1 {
+  margin: 0;
+  font-size: 1.02rem;
+  letter-spacing: 0.02em;
+}
+
+.subtitle {
+  margin: 0.35rem 0 0.8rem;
+  font-size: 0.86rem;
+  color: var(--muted);
+}
+
+.stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.45rem 0.7rem;
+}
+
+.stats div {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.6rem;
+  font-size: 0.85rem;
+  border-bottom: 1px dashed rgba(160, 189, 255, 0.15);
+  padding-bottom: 0.15rem;
+}
+
+.stats span {
+  color: var(--muted);
+}
+
+.stats strong {
+  font-variant-numeric: tabular-nums;
+}
+
+.controls {
+  display: flex;
+  gap: 0.55rem;
+  margin-top: 0.85rem;
+}
+
+button {
+  border: 1px solid rgba(50, 214, 168, 0.45);
+  background: linear-gradient(180deg, rgba(47, 214, 168, 0.22), rgba(47, 214, 168, 0.05));
+  color: var(--text);
+  border-radius: 8px;
+  padding: 0.42rem 0.68rem;
+  cursor: pointer;
+}
+
+button:hover {
+  border-color: rgba(120, 236, 206, 0.9);
+}
+
+.status {
+  margin: 0.65rem 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+@media (max-width: 760px) {
+  .hud {
+    top: auto;
+    bottom: 0.65rem;
+    left: 0.65rem;
+    right: 0.65rem;
+    width: auto;
+  }
+}
