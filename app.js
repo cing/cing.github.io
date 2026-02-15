@@ -900,6 +900,10 @@
       renderer: {
         backgroundColor: 0x101318
       },
+      camera: {
+        ...plugin.canvas3d.props.camera,
+        manualReset: true
+      },
       cameraHelper: {
         axes: { name: "off", params: {} }
       },
@@ -937,6 +941,53 @@
         shadow: { name: "off", params: {} }
       }
     });
+  }
+
+  function enforceNoAutoCenter() {
+    const plugin = state.viewer && state.viewer.plugin;
+    if (!plugin || !plugin.canvas3d) return;
+    plugin.canvas3d.setProps({
+      camera: {
+        ...plugin.canvas3d.props.camera,
+        manualReset: true
+      }
+    });
+  }
+
+  function lockFixedCameraView() {
+    const plugin = state.viewer && state.viewer.plugin;
+    const canvas3d = plugin && plugin.canvas3d;
+    if (!canvas3d || typeof canvas3d.requestCameraReset !== "function") return;
+
+    const dir = normalize([1, 0.22, 1]);
+    const up = [0, 1, 0];
+    try {
+      canvas3d.requestCameraReset({
+        durationMs: 0,
+        snapshot: (scene, camera) => {
+          const sphere = scene && scene.boundingSphereVisible ? scene.boundingSphereVisible : null;
+          const center = sphere && sphere.center ? sphere.center : [0, 0, 0];
+          const radius = Math.max(18, sphere && Number.isFinite(sphere.radius) ? sphere.radius : SIM.initialSpread);
+          if (camera && typeof camera.getInvariantFocus === "function") {
+            return camera.getInvariantFocus(center, radius * 1.22, dir, up);
+          }
+          if (camera && typeof camera.getFocus === "function") {
+            return camera.getFocus(center, radius * 1.22);
+          }
+          return canvas3d.camera.getSnapshot();
+        }
+      });
+    } catch (err) {
+      try {
+        if (plugin.managers && plugin.managers.camera && typeof plugin.managers.camera.reset === "function") {
+          const snapshot = canvas3d.camera.getFocus([0, 0, 0], SIM.initialSpread * 1.2);
+          plugin.managers.camera.reset(snapshot, 0);
+        }
+      } catch (fallbackErr) {
+        console.warn("Camera lock fallback failed:", fallbackErr);
+      }
+      console.warn("Camera lock failed:", err);
+    }
   }
 
   function toggleIlluminationFromDefault() {
@@ -1060,11 +1111,14 @@
       illumination: true
     });
 
+    enforceNoAutoCenter();
     toggleIlluminationFromDefault();
     await applyIllustrativeStyle();
+    enforceNoAutoCenter();
 
     reseedSystem();
     await queueDraw(true);
+    lockFixedCameraView();
     updateHud();
 
     setStatus("Initialized coarse-grained engine.");
@@ -1087,6 +1141,7 @@
         setStatus("Reseeding coarse-grained fragments...");
         reseedSystem();
         await queueDraw(true);
+        lockFixedCameraView();
         updateHud();
         setStatus("Reseeded.");
       } catch (err) {
