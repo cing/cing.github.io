@@ -13,21 +13,25 @@
     renderIntervalMs: 150,
     minRenderIntervalMs: 50,
     maxRenderIntervalMs: 300,
-    renderAtomMode: "backbone",
+    renderAtomMode: "full",
     fullAtomRenderEvery: 8,
     totalCycles: 4000,
     initialSpread: 60,
     finalSpread: 14,
     bondLength: 3.8,
     bondK: 64,
-    secK2: 9,
-    secK3: 8,
+    secK2: 16,
+    secK3: 14,
+    secK4_helix: 7,
+    secK4_other: 2,
+    angleK: 18,
+    angleTheta0: 111.0 * DEG,
     centerK: 0.035,
     repSigma: 3.3,
     repEps: 1.2,
     attrSigma: 8.8,
-    attrEpsStart: 0.015,
-    attrEpsEnd: 0.12,
+    attrEpsStart: 0.08,
+    attrEpsEnd: 0.65,
     attrCut: 18,
     nonbondStride: 2,
     neighborListEnabled: true,
@@ -37,15 +41,15 @@
     gamma: 0.75,
     tempStart: 8.0,
     tempEnd: 2.8,
-    maxForce: 45,
+    maxForce: 55,
     maxSpeed: 12,
     maxStep: 0.6
   };
 
   const SECONDARY_TARGETS = {
-    helix: { d2: 5.45, d3: 5.2 },
-    beta: { d2: 6.9, d3: 10.1 },
-    coil: { d2: 6.2, d3: 8.3 }
+    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 6.0, dihPhi0: 50 * DEG },
+    beta: { d2: 6.9, d3: 10.1, d4: 13.2, dihK: 4.0, dihPhi0: -170 * DEG },
+    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.5, dihPhi0: 0 }
   };
 
   const RESIDUE_LIBRARY = [
@@ -268,20 +272,20 @@
   function seedSecondaryTypes(fragment, p) {
     for (let i = 0; i < fragment.length; i++) fragment.ss[i] = "coil";
 
-    const motifs = randInt(2, Math.max(2, Math.floor(fragment.length / 5)));
+    const motifs = randInt(3, Math.max(3, Math.floor(fragment.length / 3)));
     const helixChance = 0.55 + 0.2 * p;
     for (let m = 0; m < motifs; m++) {
       const type = Math.random() < helixChance ? "helix" : "beta";
-      const span = type === "helix" ? randInt(4, 8) : randInt(3, 6);
+      const span = type === "helix" ? randInt(5, 10) : randInt(3, 7);
       const start = randInt(0, Math.max(0, fragment.length - span));
       for (let i = start; i < start + span; i++) fragment.ss[i] = type;
     }
   }
 
   function initialDihedralForSs(ssType) {
-    if (ssType === "helix") return rand(35, 70) * DEG;
-    if (ssType === "beta") return (Math.random() < 0.5 ? -1 : 1) * rand(150, 178) * DEG;
-    return rand(-145, 145) * DEG;
+    if (ssType === "helix") return rand(46, 54) * DEG;
+    if (ssType === "beta") return (Math.random() < 0.5 ? -1 : 1) * rand(160, 175) * DEG;
+    return rand(-80, 80) * DEG;
   }
 
   function buildInitialCaChain(length, center, ss) {
@@ -402,6 +406,79 @@
     return 0.5 * k * dr * dr;
   }
 
+  function applyAngleBend(frag, i, j, k, K, theta0) {
+    const rij = sub(frag.ca[i], frag.ca[j]);
+    const rkj = sub(frag.ca[k], frag.ca[j]);
+    const rij_len = norm(rij);
+    const rkj_len = norm(rkj);
+    if (rij_len < 1e-8 || rkj_len < 1e-8) return 0;
+
+    const cosTheta = clamp(dot(rij, rkj) / (rij_len * rkj_len), -1, 1);
+    const theta = Math.acos(cosTheta);
+    const dTheta = theta - theta0;
+    const sinTheta = Math.sqrt(Math.max(1e-12, 1 - cosTheta * cosTheta));
+
+    const dEdTheta = K * dTheta;
+    const st = dEdTheta / sinTheta;
+
+    const inv_rij = 1 / rij_len;
+    const inv_rkj = 1 / rkj_len;
+
+    for (let d = 0; d < 3; d++) {
+      const fi = st * (rkj[d] * inv_rkj - rij[d] * inv_rij * cosTheta) * inv_rij;
+      const fk = st * (rij[d] * inv_rij - rkj[d] * inv_rkj * cosTheta) * inv_rkj;
+      frag.forces[i][d] += fi;
+      frag.forces[k][d] += fk;
+      frag.forces[j][d] -= fi + fk;
+    }
+
+    return 0.5 * K * dTheta * dTheta;
+  }
+
+  function applyDihedral(frag, i, j, k, l, Kdih, phi0) {
+    const b1 = sub(frag.ca[j], frag.ca[i]);
+    const b2 = sub(frag.ca[k], frag.ca[j]);
+    const b3 = sub(frag.ca[l], frag.ca[k]);
+
+    const n1 = cross(b1, b2);
+    const n2 = cross(b2, b3);
+    const n1_len = norm(n1);
+    const n2_len = norm(n2);
+    if (n1_len < 1e-8 || n2_len < 1e-8) return 0;
+
+    const b2_len = norm(b2);
+    if (b2_len < 1e-8) return 0;
+
+    const m1 = cross(n1, normalize(b2));
+    const cosPhi = dot(n1, n2) / (n1_len * n2_len);
+    const sinPhi = dot(m1, n2) / (n1_len * n2_len);
+    const phi = Math.atan2(sinPhi, cosPhi);
+
+    const dEdPhi = Kdih * Math.sin(phi - phi0);
+
+    const n1_sq = dot(n1, n1);
+    const n2_sq = dot(n2, n2);
+    if (n1_sq < 1e-12 || n2_sq < 1e-12) return 0;
+
+    const fi = scale(n1, -dEdPhi * b2_len / n1_sq);
+    const fl = scale(n2, dEdPhi * b2_len / n2_sq);
+
+    const dj_b1 = dot(b1, b2) / (b2_len * b2_len);
+    const dk_b3 = dot(b3, b2) / (b2_len * b2_len);
+
+    const fj = sub(scale(fi, dj_b1 - 1), scale(fl, dk_b3));
+    const fk = sub(scale(fl, dk_b3 - 1), scale(fi, dj_b1));
+
+    for (let d = 0; d < 3; d++) {
+      frag.forces[i][d] += fi[d];
+      frag.forces[j][d] += fj[d];
+      frag.forces[k][d] += fk[d];
+      frag.forces[l][d] += fl[d];
+    }
+
+    return Kdih * (1 - Math.cos(phi - phi0));
+  }
+
   function applyRepulsiveLJ(fragA, i, fragB, j, d, r2, sigma, eps) {
     if (r2 < 1e-12) return 0;
 
@@ -479,6 +556,23 @@
       for (let i = 0; i < frag.length - 3; i++) {
         const target3 = SECONDARY_TARGETS[frag.ss[i]].d3;
         potential += applySpring(frag, i, frag, i + 3, SIM.secK3 * secBias, target3);
+      }
+
+      for (let i = 0; i < frag.length - 2; i++) {
+        potential += applyAngleBend(frag, i, i + 1, i + 2, SIM.angleK, SIM.angleTheta0);
+      }
+
+      for (let i = 0; i < frag.length - 3; i++) {
+        const ss = frag.ss[i];
+        const targets = SECONDARY_TARGETS[ss];
+        potential += applyDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihK, targets.dihPhi0);
+      }
+
+      for (let i = 0; i < frag.length - 4; i++) {
+        const ss = frag.ss[i];
+        const k4 = ss === "helix" ? SIM.secK4_helix : SIM.secK4_other;
+        const d4 = SECONDARY_TARGETS[ss].d4;
+        potential += applySpring(frag, i, frag, i + 4, k4, d4);
       }
     }
 
@@ -640,7 +734,7 @@
       }
     }
 
-    enforceBondConstraints(2);
+    enforceBondConstraints(3);
   }
 
   function frameDirection(t, n, b, u, vComp, w) {
@@ -835,7 +929,6 @@
     const drawStart = performance.now();
     const plugin = state.viewer.plugin;
     const includeSidechains = SIM.renderAtomMode === "full" ||
-      forceDetail ||
       (SIM.renderAtomMode === "mixed" && state.drawCount % SIM.fullAtomRenderEvery === 0);
     const pdb = buildPdb(includeSidechains);
     const previousStructures = state.activeStructures.slice();
