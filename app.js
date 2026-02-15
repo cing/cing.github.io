@@ -85,7 +85,6 @@
     drawBusy: false,
     drawQueued: false,
     drawCount: 0,
-    representationApplied: false,
     lastDrawMs: 0,
     dynamicRenderIntervalMs: SIM.renderIntervalMs,
     cps: 0,
@@ -849,10 +848,9 @@
     const latest = structures.length ? structures[structures.length - 1] : null;
     const components = latest && Array.isArray(latest.components) ? latest.components : [];
 
-    if (!state.representationApplied && components.length) {
+    if (components.length) {
       await plugin.managers.structure.component.removeRepresentations(components);
       await plugin.managers.structure.component.addRepresentation(components, "spacefill");
-      state.representationApplied = true;
     }
     if (previousStructures.length) {
       await plugin.managers.structure.hierarchy.remove(previousStructures, true);
@@ -981,7 +979,6 @@
     state.drawCount = 0;
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
-    state.representationApplied = false;
     state.fragments = [];
 
     const centers = [];
