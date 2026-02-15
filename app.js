@@ -8,9 +8,13 @@
     fragmentCount: 8,
     minResidues: 18,
     maxResidues: 30,
-    frameMs: 16,
+    frameMs: 12,
     substepsPerFrame: 2,
-    renderIntervalMs: 250,
+    renderIntervalMs: 33,
+    minRenderIntervalMs: 16,
+    maxRenderIntervalMs: 100,
+    renderAtomMode: "mixed",
+    fullAtomRenderEvery: 8,
     totalCycles: 4000,
     initialSpread: 60,
     finalSpread: 14,
@@ -25,6 +29,9 @@
     attrEpsStart: 0.015,
     attrEpsEnd: 0.12,
     attrCut: 18,
+    nonbondStride: 2,
+    neighborListEnabled: true,
+    neighborCellSize: 18,
     clashDistance: 3.0,
     dt: 0.026,
     gamma: 0.75,
@@ -60,6 +67,9 @@
   const el = {
     cycle: document.getElementById("cycle"),
     temperature: document.getElementById("temperature"),
+    cps: document.getElementById("cps"),
+    drawMs: document.getElementById("drawms"),
+    pairsPs: document.getElementById("pairsps"),
     acceptance: document.getElementById("acceptance"),
     bias: document.getElementById("bias"),
     assembly: document.getElementById("assembly"),
@@ -79,7 +89,20 @@
     busy: false,
     drawBusy: false,
     drawQueued: false,
+    drawCount: 0,
     lastDrawMs: 0,
+    dynamicRenderIntervalMs: SIM.renderIntervalMs,
+    cps: 0,
+    cpsWindowStartMs: 0,
+    cpsWindowStartCycle: 0,
+    pairWindowStartMs: 0,
+    pairWindowCount: 0,
+    pairChecksPerSec: 0,
+    perf: {
+      computeMs: 0,
+      drawMs: 0,
+      buildPdbMs: 0
+    },
     lastMetrics: {
       clashes: 0,
       contacts: 0,
@@ -110,6 +133,27 @@
   function smoothstep(t) {
     const x = clamp(t, 0, 1);
     return x * x * (3 - 2 * x);
+  }
+
+  function ewma(prev, sample, alpha) {
+    if (prev <= 1e-9) return sample;
+    return prev + alpha * (sample - prev);
+  }
+
+  function updatePairRate(pairChecks) {
+    const now = performance.now();
+    if (state.pairWindowStartMs <= 0) {
+      state.pairWindowStartMs = now;
+      state.pairWindowCount = pairChecks;
+      return;
+    }
+    state.pairWindowCount += pairChecks;
+    const dtMs = now - state.pairWindowStartMs;
+    if (dtMs < 500) return;
+    const rate = state.pairWindowCount / (dtMs / 1000);
+    state.pairChecksPerSec = ewma(state.pairChecksPerSec, rate, 0.35);
+    state.pairWindowStartMs = now;
+    state.pairWindowCount = 0;
   }
 
   function gauss() {
@@ -217,6 +261,24 @@
     if (p < 0.5) return "Secondary Build";
     if (p < 0.8) return "Collapse";
     return "Packing";
+  }
+
+  function updateCycleRate() {
+    const now = performance.now();
+    if (state.cpsWindowStartMs <= 0) {
+      state.cpsWindowStartMs = now;
+      state.cpsWindowStartCycle = state.cycle;
+      return;
+    }
+
+    const dtMs = now - state.cpsWindowStartMs;
+    if (dtMs < 500) return;
+
+    const dCycle = state.cycle - state.cpsWindowStartCycle;
+    const raw = dCycle / (dtMs / 1000);
+    state.cps = state.cps <= 1e-6 ? raw : lerp(state.cps, raw, 0.35);
+    state.cpsWindowStartMs = now;
+    state.cpsWindowStartCycle = state.cycle;
   }
 
   function seedSecondaryTypes(fragment, p) {
@@ -401,6 +463,7 @@
   }
 
   function computeForces(p) {
+    const t0 = performance.now();
     clearForces();
 
     const secBias = currentSecondaryBias(p);
@@ -435,43 +498,77 @@
       }
     }
 
+    const cellSize = SIM.neighborCellSize;
+    const invCellSize = 1 / cellSize;
+    const beads = [];
+    const grid = new Map();
+    const stride = Math.max(1, SIM.nonbondStride | 0);
+    const attrCut2 = SIM.attrCut * SIM.attrCut;
+    const clashCut2 = SIM.clashDistance * SIM.clashDistance;
+
+    for (let fi = 0; fi < state.fragments.length; fi++) {
+      const frag = state.fragments[fi];
+      for (let i = 0; i < frag.length; i += stride) {
+        const p0 = frag.ca[i];
+        const cx = Math.floor(p0[0] * invCellSize);
+        const cy = Math.floor(p0[1] * invCellSize);
+        const cz = Math.floor(p0[2] * invCellSize);
+        const bead = { frag, fi, i, p: p0, residue: frag.residues[i], cx, cy, cz };
+        const index = beads.length;
+        beads.push(bead);
+        const key = `${cx}|${cy}|${cz}`;
+        let cell = grid.get(key);
+        if (!cell) {
+          cell = [];
+          grid.set(key, cell);
+        }
+        cell.push(index);
+      }
+    }
+
     let clashes = 0;
     let contacts = 0;
     let pairs = 0;
+    let pairComputed = 0;
 
-    for (let fi = 0; fi < state.fragments.length; fi++) {
-      const a = state.fragments[fi];
-      for (let fj = fi; fj < state.fragments.length; fj++) {
-        const b = state.fragments[fj];
-        const same = fi === fj;
+    for (let ai = 0; ai < beads.length; ai++) {
+      const a = beads[ai];
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const key = `${a.cx + dx}|${a.cy + dy}|${a.cz + dz}`;
+            const cell = grid.get(key);
+            if (!cell) continue;
+            for (let c = 0; c < cell.length; c++) {
+              const bi = cell[c];
+              if (bi <= ai) continue;
+              const b = beads[bi];
+              const same = a.fi === b.fi;
+              if (same && Math.abs(a.i - b.i) < 3) continue;
+              pairs += 1;
 
-        for (let i = 0; i < a.length; i++) {
-          const jStart = same ? i + 1 : 0;
-          for (let j = jStart; j < b.length; j++) {
-            if (same && Math.abs(i - j) < 3) continue;
-            pairs += 1;
+              const dVec = sub(b.p, a.p);
+              const d2 = dot(dVec, dVec);
+              if (d2 < clashCut2) clashes += 1;
+              if (!same && d2 < 100) contacts += 1;
 
-            const dVec = sub(b.ca[j], a.ca[i]);
-            const d2 = dot(dVec, dVec);
-            if (d2 < SIM.clashDistance * SIM.clashDistance) clashes += 1;
-            if (!same && d2 < 100) contacts += 1;
+              const sigmaPair = 0.5 * (a.residue.size + b.residue.size);
+              const hydroPair = 0.5 * (a.residue.hydro + b.residue.hydro);
+              const qq = a.residue.charge * b.residue.charge;
+              const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.65 : 1.0;
 
-            const ra = a.residues[i];
-            const rb = b.residues[j];
-            const sigmaPair = 0.5 * (ra.size + rb.size);
-            const hydroPair = 0.5 * (ra.hydro + rb.hydro);
-            const qq = ra.charge * rb.charge;
-            const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.65 : 1.0;
-
-            const repSigma = Math.max(2.8, sigmaPair);
-            const repCut = repSigma * Math.pow(2, 1 / 6);
-            if (d2 < repCut * repCut) {
-              potential += applyRepulsiveLJ(a, i, b, j, dVec, d2, repSigma, SIM.repEps);
-            }
-            if (!same || Math.abs(i - j) > 4) {
-              const pairAttr = attr * (0.25 + 0.75 * hydroPair) * electroBias;
-              if (d2 < SIM.attrCut * SIM.attrCut) {
-                potential += applyAttractiveLJ(a, i, b, j, dVec, d2, SIM.attrSigma, pairAttr, SIM.attrCut);
+              const repSigma = Math.max(2.8, sigmaPair);
+              const repCut = repSigma * Math.pow(2, 1 / 6);
+              if (d2 < repCut * repCut) {
+                potential += applyRepulsiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, repSigma, SIM.repEps);
+                pairComputed += 1;
+              }
+              if (!same || Math.abs(a.i - b.i) > 4) {
+                const pairAttr = attr * (0.25 + 0.75 * hydroPair) * electroBias;
+                if (d2 < attrCut2) {
+                  potential += applyAttractiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, SIM.attrSigma, pairAttr, SIM.attrCut);
+                  pairComputed += 1;
+                }
               }
             }
           }
@@ -485,11 +582,13 @@
       }
     }
 
+    updatePairRate(pairComputed);
     state.lastMetrics = {
       clashes,
       contacts,
       totalPairs: Math.max(1, pairs)
     };
+    state.perf.computeMs = ewma(state.perf.computeMs, performance.now() - t0, 0.25);
 
     return potential;
   }
@@ -534,13 +633,9 @@
         const vel = frag.vel[i];
         const pos = frag.ca[i];
 
-        vel[0] += 0.5 * dt * f[0];
-        vel[1] += 0.5 * dt * f[1];
-        vel[2] += 0.5 * dt * f[2];
-
-        vel[0] = c * vel[0] + sigmaNoise * gauss();
-        vel[1] = c * vel[1] + sigmaNoise * gauss();
-        vel[2] = c * vel[2] + sigmaNoise * gauss();
+        vel[0] = c * vel[0] + dt * f[0] + sigmaNoise * gauss();
+        vel[1] = c * vel[1] + dt * f[1] + sigmaNoise * gauss();
+        vel[2] = c * vel[2] + dt * f[2] + sigmaNoise * gauss();
 
         capVectorInPlace(vel, SIM.maxSpeed);
 
@@ -561,18 +656,7 @@
       }
     }
 
-    enforceBondConstraints(3);
-    computeForces(p);
-
-    for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length; i++) {
-        const f = frag.forces[i];
-        const vel = frag.vel[i];
-        vel[0] += 0.5 * dt * f[0];
-        vel[1] += 0.5 * dt * f[1];
-        vel[2] += 0.5 * dt * f[2];
-      }
-    }
+    enforceBondConstraints(2);
   }
 
   function assemblyMetric() {
@@ -670,7 +754,7 @@
     return out;
   }
 
-  function rebuildAllAtoms(fragment) {
+  function rebuildAllAtoms(fragment, includeSidechains) {
     const atoms = [];
 
     for (let i = 0; i < fragment.length; i++) {
@@ -704,9 +788,11 @@
       atoms.push({ name: "C", el: "C", residue: resName, res, p: C });
       atoms.push({ name: "O", el: "O", residue: resName, res, p: O });
 
-      const atomMap = { N, CA: ca, C, O };
-      const sidechain = buildSidechainAtoms(resName, atomMap, t, n, b, res);
-      for (const atom of sidechain) atoms.push(atom);
+      if (includeSidechains) {
+        const atomMap = { N, CA: ca, C, O };
+        const sidechain = buildSidechainAtoms(resName, atomMap, t, n, b, res);
+        for (const atom of sidechain) atoms.push(atom);
+      }
     }
 
     return atoms;
@@ -724,7 +810,8 @@
     return `ATOM  ${serialText} ${atomText} ${resText} ${chain}${seqText}    ${xx}${yy}${zz}  1.00 25.00           ${elText}`;
   }
 
-  function buildPdb() {
+  function buildPdb(includeSidechains) {
+    const t0 = performance.now();
     const lines = [];
     let serial = 1;
     let globalResSeq = 1;
@@ -735,7 +822,7 @@
     let atomCount = 0;
 
     for (const fragment of state.fragments) {
-      const atoms = rebuildAllAtoms(fragment);
+      const atoms = rebuildAllAtoms(fragment, includeSidechains);
       fragmentAtoms.push({ fragment, atoms, startResSeq: globalResSeq });
       for (const atom of atoms) {
         sumX += atom.p[0];
@@ -773,12 +860,17 @@
     }
 
     lines.push("END");
+    state.perf.buildPdbMs = ewma(state.perf.buildPdbMs, performance.now() - t0, 0.25);
     return lines.join("\n");
   }
 
-  async function draw() {
+  async function draw(forceDetail) {
+    const drawStart = performance.now();
     const plugin = state.viewer.plugin;
-    const pdb = buildPdb();
+    const includeSidechains = SIM.renderAtomMode === "full" ||
+      forceDetail ||
+      (SIM.renderAtomMode === "mixed" && state.drawCount % SIM.fullAtomRenderEvery === 0);
+    const pdb = buildPdb(includeSidechains);
     const previousStructures = state.activeStructures.slice();
 
     await state.viewer.loadStructureFromData(pdb, "pdb", {
@@ -798,11 +890,19 @@
     }
     state.activeStructures = latest ? [latest] : [];
     plugin.managers.camera.reset(void 0, 0);
+    state.drawCount += 1;
+    const drawMs = performance.now() - drawStart;
+    state.perf.drawMs = ewma(state.perf.drawMs, drawMs, 0.25);
+    if (drawMs > 45) {
+      state.dynamicRenderIntervalMs = Math.min(SIM.maxRenderIntervalMs, state.dynamicRenderIntervalMs * 1.15);
+    } else if (drawMs < 20) {
+      state.dynamicRenderIntervalMs = Math.max(SIM.minRenderIntervalMs, state.dynamicRenderIntervalMs * 0.92);
+    }
   }
 
   async function queueDraw(force) {
     const now = performance.now();
-    if (!force && now - state.lastDrawMs < SIM.renderIntervalMs) return;
+    if (!force && now - state.lastDrawMs < state.dynamicRenderIntervalMs) return;
     if (state.drawBusy) {
       state.drawQueued = true;
       return;
@@ -812,7 +912,7 @@
     try {
       do {
         state.drawQueued = false;
-        await draw();
+        await draw(force);
         state.lastDrawMs = performance.now();
       } while (state.drawQueued);
     } finally {
@@ -896,6 +996,9 @@
 
     if (el.cycle) el.cycle.textContent = String(state.cycle);
     if (el.temperature) el.temperature.textContent = temp.toFixed(2);
+    if (el.cps) el.cps.textContent = state.cps.toFixed(2);
+    if (el.drawMs) el.drawMs.textContent = state.perf.drawMs.toFixed(2);
+    if (el.pairsPs) el.pairsPs.textContent = Math.round(state.pairChecksPerSec).toLocaleString();
     if (el.acceptance) el.acceptance.textContent = `${(100 * clamp(clashFree, 0, 1)).toFixed(1)}%`;
     if (el.bias) el.bias.textContent = `${(100 * sec).toFixed(0)}%`;
     if (el.assembly) el.assembly.textContent = `${(100 * assemblyMetric()).toFixed(1)}%`;
@@ -905,6 +1008,15 @@
   function reseedSystem() {
     state.seed += 1;
     state.cycle = 0;
+    state.cps = 0;
+    state.cpsWindowStartMs = 0;
+    state.cpsWindowStartCycle = 0;
+    state.pairWindowStartMs = 0;
+    state.pairWindowCount = 0;
+    state.pairChecksPerSec = 0;
+    state.drawCount = 0;
+    state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
+    state.activeStructures = [];
     state.fragments = [];
 
     const centers = [];
@@ -935,9 +1047,13 @@
     try {
       if (state.running) {
         integrateFrame();
+        updateCycleRate();
         updateHud();
         await queueDraw(false);
-        setStatus("Running coarse-grained Langevin + implicit-solvent dynamics.");
+        setStatus(
+          `Running coarse-grained dynamics. Render ${Math.round(state.dynamicRenderIntervalMs)}ms, ` +
+          `compute ${state.perf.computeMs.toFixed(1)}ms, draw ${state.perf.drawMs.toFixed(1)}ms.`
+        );
       }
     } catch (err) {
       console.error(err);
