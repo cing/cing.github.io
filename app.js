@@ -125,16 +125,20 @@
   ];
 
   const el = {
-    cycle: document.getElementById("cycle"),
-    temperature: document.getElementById("temperature"),
-    cps: document.getElementById("cps"),
-    drawMs: document.getElementById("drawms"),
-    pairsPs: document.getElementById("pairsps"),
-    acceptance: document.getElementById("acceptance"),
     status: document.getElementById("status"),
     toggle: document.getElementById("toggle"),
     reset: document.getElementById("reset")
   };
+
+  function pickAccentColor() {
+    const color = CHAIN_PALETTE[Math.floor(Math.random() * CHAIN_PALETTE.length)];
+    const r = (color >> 16) & 0xff;
+    const g = (color >> 8) & 0xff;
+    const b = color & 0xff;
+    const hex = "#" + color.toString(16).padStart(6, "0");
+    document.documentElement.style.setProperty("--accent", hex);
+    document.documentElement.style.setProperty("--accent-rgb", `${r}, ${g}, ${b}`);
+  }
 
   const state = {
     viewer: null,
@@ -1209,17 +1213,6 @@
   }
 
   function updateHud() {
-    const p = progress();
-    const temp = currentTemp(p);
-
-    const clashFree = 1 - state.lastMetrics.clashes / state.lastMetrics.totalPairs;
-
-    if (el.cycle) el.cycle.textContent = String(state.cycle);
-    if (el.temperature) el.temperature.textContent = temp.toFixed(2);
-    if (el.cps) el.cps.textContent = state.cps.toFixed(2);
-    if (el.drawMs) el.drawMs.textContent = state.perf.drawMs.toFixed(2);
-    if (el.pairsPs) el.pairsPs.textContent = Math.round(state.pairChecksPerSec).toLocaleString();
-    if (el.acceptance) el.acceptance.textContent = `${(100 * clamp(clashFree, 0, 1)).toFixed(1)}%`;
   }
 
   function reseedSystem() {
@@ -1235,6 +1228,7 @@
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
     state.fragments = [];
+    pickAccentColor();
 
     const centers = [];
     for (let i = 0; i < SIM.fragmentCount; i++) {
@@ -1270,10 +1264,7 @@
           console.error(drawErr);
           setStatus(`Draw failed: ${drawErr && drawErr.message ? drawErr.message : "unknown error"}`);
         });
-        setStatus(
-          `Running coarse-grained dynamics. Render ${Math.round(state.dynamicRenderIntervalMs)}ms, ` +
-          `compute ${state.perf.computeMs.toFixed(1)}ms, draw ${state.perf.drawMs.toFixed(1)}ms.`
-        );
+        setStatus("Simulating protein dynamics...");
       }
     } catch (err) {
       console.error(err);
@@ -1292,7 +1283,8 @@
       return;
     }
 
-    setStatus("Initializing Mol* viewer...");
+    pickAccentColor();
+    setStatus("Initializing...");
     state.viewer = await window.molstar.Viewer.create("app", {
       layoutIsExpanded: true,
       layoutShowControls: false,
@@ -1326,7 +1318,7 @@
     lockFixedCameraView();
     updateHud();
 
-    setStatus("Initialized coarse-grained engine.");
+    setStatus("Simulating protein dynamics...");
     loop();
   }
 
@@ -1334,7 +1326,7 @@
     el.toggle.addEventListener("click", function () {
       state.running = !state.running;
       el.toggle.textContent = state.running ? "Pause" : "Resume";
-      setStatus(state.running ? "Running coarse-grained Langevin + implicit-solvent dynamics." : "Paused.");
+      setStatus(state.running ? "Simulating protein dynamics..." : "Paused.");
     });
   }
 
@@ -1343,7 +1335,7 @@
       if (state.busy) return;
       state.busy = true;
       try {
-        setStatus("Reseeding coarse-grained fragments...");
+        setStatus("Reseeding...");
         const oldStructures = state.activeStructures.slice();
         reseedSystem();
         if (oldStructures.length) {
