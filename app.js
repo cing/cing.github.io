@@ -4,15 +4,68 @@
   const DEG = Math.PI / 180;
   const CHAIN_IDS = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
+  const CHAIN_PALETTE = [
+    0x3498db, 0xe74c3c, 0x2ecc71, 0xf1c40f,
+    0x9b59b6, 0x1abc9c, 0xe67e22, 0xecf0f1,
+    0x2980b9, 0xc0392b, 0x27ae60, 0xf39c12,
+    0x8e44ad, 0x16a085, 0xd35400, 0xbdc3c7
+  ];
+
+  function registerFixedChainTheme(plugin) {
+    const provider = {
+      name: "fixed-chain",
+      label: "Fixed Chain Colors",
+      category: "Chain",
+      factory: function (ctx, props) {
+        return {
+          factory: provider.factory,
+          granularity: "instance",
+          color: function (location) {
+            if (location && location.kind === "element-location") {
+              try {
+                const unit = location.unit;
+                const chainIdx = unit.chainIndex[location.element];
+                const chainId = unit.model.atomicHierarchy.chains.auth_asym_id.value(chainIdx);
+                const c = CHAIN_IDS.indexOf(chainId);
+                if (c >= 0) return CHAIN_PALETTE[c % CHAIN_PALETTE.length];
+              } catch (e) { /* fall through */ }
+            }
+            if (location && location.kind === "bond-location") {
+              try {
+                const unit = location.aUnit;
+                const chainIdx = unit.chainIndex[location.aIndex];
+                const chainId = unit.model.atomicHierarchy.chains.auth_asym_id.value(chainIdx);
+                const c = CHAIN_IDS.indexOf(chainId);
+                if (c >= 0) return CHAIN_PALETTE[c % CHAIN_PALETTE.length];
+              } catch (e) { /* fall through */ }
+            }
+            return 0x888888;
+          },
+          props: props,
+          description: "Fixed per-chain colors"
+        };
+      },
+      getParams: function () { return {}; },
+      defaultValues: {},
+      isApplicable: function () { return true; }
+    };
+    const reg = plugin.representation.structure.themes.colorThemeRegistry;
+    try { reg.add(provider); } catch (e) {
+      try { reg.add("fixed-chain", provider); } catch (e2) {
+        console.warn("Could not register fixed-chain theme:", e2);
+      }
+    }
+  }
+
   const SIM = {
     fragmentCount: 8,
     minResidues: 18,
     maxResidues: 30,
     frameMs: 12,
     substepsPerFrame: 2,
-    renderIntervalMs: 150,
-    minRenderIntervalMs: 50,
-    maxRenderIntervalMs: 300,
+    renderIntervalMs: 80,
+    minRenderIntervalMs: 30,
+    maxRenderIntervalMs: 150,
     renderAtomMode: "full",
     fullAtomRenderEvery: 8,
     totalCycles: 4000,
@@ -27,6 +80,9 @@
     angleK: 18,
     angleTheta0: 111.0 * DEG,
     centerK: 0.035,
+    boxHalf: 45,
+    wallK: 12,
+    wallShell: 4,
     repSigma: 3.3,
     repEps: 1.2,
     attrSigma: 8.8,
@@ -42,6 +98,8 @@
     tempStart: 8.0,
     tempEnd: 2.8,
     maxForce: 55,
+    compactK: 0.06,
+    compactHydroMin: 0.3,
     maxSpeed: 12,
     maxStep: 0.6
   };
@@ -341,7 +399,7 @@
 
     const fragment = {
       id: i,
-      chain: "A",
+      chain: CHAIN_IDS[i % CHAIN_IDS.length],
       length,
       ca,
       vel,
@@ -546,6 +604,24 @@
           addForce(frag, i, fmag * pi[0], fmag * pi[1], fmag * pi[2]);
           potential += 0.5 * SIM.centerK * dr * dr;
         }
+
+        const bh = SIM.boxHalf;
+        const shell = SIM.wallShell;
+        const wk = SIM.wallK;
+        for (let d = 0; d < 3; d++) {
+          const coord = pi[d];
+          if (coord > bh - shell) {
+            const pen = coord - (bh - shell);
+            frag.forces[i][d] -= wk * pen;
+            potential += 0.5 * wk * pen * pen;
+          } else if (coord < -bh + shell) {
+            const pen = (-bh + shell) - coord;
+            frag.forces[i][d] += wk * pen;
+            potential += 0.5 * wk * pen * pen;
+          }
+          if (pi[d] > bh) pi[d] = bh;
+          if (pi[d] < -bh) pi[d] = -bh;
+        }
       }
 
       for (let i = 0; i < frag.length - 2; i++) {
@@ -573,6 +649,29 @@
         const k4 = ss === "helix" ? SIM.secK4_helix : SIM.secK4_other;
         const d4 = SECONDARY_TARGETS[ss].d4;
         potential += applySpring(frag, i, frag, i + 4, k4, d4);
+      }
+
+      let cmx = 0, cmy = 0, cmz = 0;
+      for (let i = 0; i < frag.length; i++) {
+        cmx += frag.ca[i][0];
+        cmy += frag.ca[i][1];
+        cmz += frag.ca[i][2];
+      }
+      const invN = 1 / frag.length;
+      cmx *= invN; cmy *= invN; cmz *= invN;
+
+      const kComp = SIM.compactK * (0.4 + 0.6 * smoothstep(p));
+      for (let i = 0; i < frag.length; i++) {
+        const hydro = frag.residues[i].hydro;
+        const w = SIM.compactHydroMin + (1 - SIM.compactHydroMin) * hydro;
+        const dx = frag.ca[i][0] - cmx;
+        const dy = frag.ca[i][1] - cmy;
+        const dz = frag.ca[i][2] - cmz;
+        const fx = -kComp * w * dx;
+        const fy = -kComp * w * dy;
+        const fz = -kComp * w * dz;
+        addForce(frag, i, fx, fy, fz);
+        potential += 0.5 * kComp * w * (dx * dx + dy * dy + dz * dz);
       }
     }
 
@@ -730,6 +829,12 @@
           pos[0] += dx;
           pos[1] += dy;
           pos[2] += dz;
+        }
+
+        const bh = SIM.boxHalf;
+        for (let d = 0; d < 3; d++) {
+          if (pos[d] > bh) { pos[d] = bh; vel[d] = 0; }
+          else if (pos[d] < -bh) { pos[d] = -bh; vel[d] = 0; }
         }
       }
     }
@@ -943,8 +1048,14 @@
 
     if (components.length) {
       await plugin.managers.structure.component.removeRepresentations(components);
-      await plugin.managers.structure.component.addRepresentation(components, "spacefill");
+      for (const comp of components) {
+        await plugin.builders.structure.representation.addRepresentation(comp.cell, {
+          type: "spacefill",
+          color: "fixed-chain"
+        });
+      }
     }
+
     if (previousStructures.length) {
       await plugin.managers.structure.hierarchy.remove(previousStructures, true);
     }
@@ -1204,6 +1315,7 @@
       illumination: true
     });
 
+    registerFixedChainTheme(state.viewer.plugin);
     enforceNoAutoCenter();
     toggleIlluminationFromDefault();
     await applyIllustrativeStyle();
