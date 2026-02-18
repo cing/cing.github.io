@@ -10,6 +10,11 @@
     0x2980b9, 0xc0392b, 0x27ae60, 0xf39c12,
     0x8e44ad, 0x16a085, 0xd35400, 0xbdc3c7
   ];
+  const SIDECHAIN_SOFT2 = 3.1 * 3.1;
+  const SIDECHAIN_HARD2 = 2.35 * 2.35;
+  const SIDECHAIN_HARD_WEIGHT = 3.2;
+  const SIDECHAIN_CA_WEIGHT = 0.25;
+  const CHI_CANDIDATES_RAD = [0, 60, -60, 120, -120, 180].map(function (deg) { return deg * DEG; });
 
   function registerFixedChainTheme(plugin) {
     const provider = {
@@ -73,12 +78,12 @@
     finalSpread: 14,
     bondLength: 3.8,
     bondK: 64,
-    secK2: 8,
-    secK3: 6.5,
-    secK4_helix: 4.5,
+    secK2: 7.2,
+    secK3: 5.8,
+    secK4_helix: 3.8,
     secK4_other: 0.4,
-    angleK: 10,
-    angleTheta0: 104.0 * DEG,
+    angleK: 8.5,
+    angleTheta0: 101.0 * DEG,
     centerK: 0.014,
     boxHalf: 45,
     wallK: 12,
@@ -110,8 +115,8 @@
   };
 
   const SECONDARY_TARGETS = {
-    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 4.6, dihPhi0: 50 * DEG },
-    beta: { d2: 6.2, d3: 8.2, d4: 10.0, dihK: 1.2, dihPhi0: -162 * DEG },
+    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 3.9, dihPhi0: 50 * DEG },
+    beta: { d2: 6.0, d3: 7.8, d4: 9.4, dihK: 0.95, dihPhi0: -160 * DEG },
     coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.35, dihPhi0: 0 }
   };
 
@@ -1119,37 +1124,113 @@
     return out;
   }
 
+  function scoreSidechainPlacement(sidechainAtoms, placedAtoms, fragment, residueIndex, resSeq, cutoff) {
+    if (!sidechainAtoms || !sidechainAtoms.length) return 0;
+
+    const maxPenalty = Number.isFinite(cutoff) ? cutoff : Number.POSITIVE_INFINITY;
+    const ca = fragment.ca;
+    const caLen = fragment.length;
+    let penalty = 0;
+
+    for (let s = 0; s < sidechainAtoms.length; s++) {
+      const sp = sidechainAtoms[s].p;
+
+      for (let a = 0; a < placedAtoms.length; a++) {
+        const other = placedAtoms[a];
+        // Skip same-residue atoms; local bonded geometry is intentionally tight.
+        if (other.res === resSeq) continue;
+        const op = other.p;
+        const dx = sp[0] - op[0];
+        const dy = sp[1] - op[1];
+        const dz = sp[2] - op[2];
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < SIDECHAIN_SOFT2) penalty += (SIDECHAIN_SOFT2 - d2);
+        if (d2 < SIDECHAIN_HARD2) penalty += SIDECHAIN_HARD_WEIGHT * (SIDECHAIN_HARD2 - d2);
+        if (penalty >= maxPenalty) return penalty;
+      }
+
+      // Add a light backbone-aware penalty against non-neighbor CA sites.
+      for (let j = 0; j < caLen; j++) {
+        if (Math.abs(j - residueIndex) <= 1) continue;
+        const cp = ca[j];
+        const dx = sp[0] - cp[0];
+        const dy = sp[1] - cp[1];
+        const dz = sp[2] - cp[2];
+        const d2 = dx * dx + dy * dy + dz * dz;
+        if (d2 < SIDECHAIN_SOFT2) penalty += SIDECHAIN_CA_WEIGHT * (SIDECHAIN_SOFT2 - d2);
+        if (penalty >= maxPenalty) return penalty;
+      }
+    }
+
+    return penalty;
+  }
+
   function rebuildAllAtoms(fragment, includeSidechains) {
     const atoms = [];
+    const len = fragment.length;
     let cmx = 0, cmy = 0, cmz = 0;
-    for (let i = 0; i < fragment.length; i++) {
+    for (let i = 0; i < len; i++) {
       cmx += fragment.ca[i][0];
       cmy += fragment.ca[i][1];
       cmz += fragment.ca[i][2];
     }
-    const inv = fragment.length > 0 ? 1 / fragment.length : 0;
+    const inv = len > 0 ? 1 / len : 0;
     cmx *= inv; cmy *= inv; cmz *= inv;
 
-    for (let i = 0; i < fragment.length; i++) {
+    for (let i = 0; i < len; i++) {
       const residue = fragment.residues[i];
       const resName = residue.name;
       const res = i + 1;
       const ca = fragment.ca[i];
-      const prev = fragment.ca[Math.max(0, i - 1)];
-      const next = fragment.ca[Math.min(fragment.length - 1, i + 1)];
 
-      let t = normalize(sub(next, prev));
+      let t;
+      if (len <= 1) {
+        t = [1, 0, 0];
+      } else if (i === 0) {
+        t = normalize(sub(fragment.ca[1], ca));
+      } else if (i === len - 1) {
+        t = normalize(sub(ca, fragment.ca[len - 2]));
+      } else {
+        t = normalize(sub(fragment.ca[i + 1], fragment.ca[i - 1]));
+      }
       if (norm(t) < 1e-10) t = [1, 0, 0];
 
-      const towardPrev = normalize(sub(prev, ca));
-      const towardNext = normalize(sub(next, ca));
-      let n = normalize(add(towardPrev, towardNext));
-      if (norm(n) < 1e-10) {
-        n = normalize(cross(t, [0, 1, 0]));
-        if (norm(n) < 1e-10) n = normalize(cross(t, [1, 0, 0]));
+      let curvature = [0, 0, 0];
+      if (len >= 3) {
+        if (i === 0) {
+          const v0 = normalize(sub(fragment.ca[1], fragment.ca[0]));
+          const v1 = normalize(sub(fragment.ca[2], fragment.ca[1]));
+          curvature = sub(v1, v0);
+        } else if (i === len - 1) {
+          const v0 = normalize(sub(fragment.ca[len - 2], fragment.ca[len - 3]));
+          const v1 = normalize(sub(fragment.ca[len - 1], fragment.ca[len - 2]));
+          curvature = sub(v1, v0);
+        } else {
+          const vPrev = normalize(sub(fragment.ca[i], fragment.ca[i - 1]));
+          const vNext = normalize(sub(fragment.ca[i + 1], fragment.ca[i]));
+          curvature = sub(vNext, vPrev);
+        }
       }
-      const b = normalize(cross(t, n));
+
+      let outToCom = normalize(sub(ca, [cmx, cmy, cmz]));
+      if (norm(outToCom) < 1e-10) outToCom = [0, 1, 0];
+
+      let n = normalize(curvature);
+      let b = normalize(cross(t, n));
+      if (norm(n) < 1e-4 || Math.abs(dot(n, t)) > 0.92 || norm(b) < 1e-10) {
+        let ref = outToCom;
+        if (Math.abs(dot(ref, t)) > 0.9) ref = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+        b = normalize(cross(t, ref));
+      }
+      if (norm(b) < 1e-10) {
+        const ref = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
+        b = normalize(cross(t, ref));
+      }
       n = normalize(cross(b, t));
+      if (dot(n, outToCom) < 0) {
+        n = scale(n, -1);
+        b = scale(b, -1);
+      }
 
       const N = add(ca, add(scale(t, -1.45), scale(n, 0.55)));
       const C = add(ca, add(scale(t, 1.52), scale(n, 0.46)));
@@ -1171,7 +1252,9 @@
 
         // Keep sidechains from collapsing into a single inward-facing fan,
         // but avoid a hard global flip that can synchronize entire loops.
-        const outDir = normalize(sub(ca, [cmx, cmy, cmz]));
+        let outDir = outToCom;
+        if (i === 0 && len > 1) outDir = normalize(sub(ca, fragment.ca[1]));
+        if (i === len - 1 && len > 1) outDir = normalize(sub(ca, fragment.ca[len - 2]));
         cbDir = normalize(add(scale(cbDir, 0.72), scale(outDir, 0.5)));
 
         let tSc = normalize(sub(C, N));
@@ -1184,10 +1267,28 @@
         const h = hash01(fragment.id + 1, i + 1, resName.charCodeAt(0));
         const parity = (i & 1) ? 1 : -1;
         const chiLike = parity * (48 * DEG) + (h - 0.5) * (220 * DEG);
-        const sideFrame = rotateNormalBinormal(nSc, bSc, chiLike);
-        const atomMap = { N, CA: ca, C, O };
-        const sidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
-        for (const atom of sidechain) atoms.push(atom);
+        let bestSidechain = null;
+        let bestScore = Number.POSITIVE_INFINITY;
+
+        for (let c = 0; c < CHI_CANDIDATES_RAD.length; c++) {
+          const chi = chiLike + CHI_CANDIDATES_RAD[c];
+          const sideFrame = rotateNormalBinormal(nSc, bSc, chi);
+          const atomMap = { N, CA: ca, C, O };
+          const candidate = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
+          const score = scoreSidechainPlacement(candidate, atoms, fragment, i, res, bestScore);
+          if (score < bestScore) {
+            bestScore = score;
+            bestSidechain = candidate;
+          }
+        }
+
+        if (!bestSidechain) {
+          const sideFrame = rotateNormalBinormal(nSc, bSc, chiLike);
+          const atomMap = { N, CA: ca, C, O };
+          bestSidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
+        }
+
+        for (const atom of bestSidechain) atoms.push(atom);
       }
     }
 
