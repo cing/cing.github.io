@@ -69,29 +69,29 @@
     renderAtomMode: "full",
     fullAtomRenderEvery: 8,
     totalCycles: 4000,
-    initialSpread: 60,
+    initialSpread: 52,
     finalSpread: 14,
     bondLength: 3.8,
     bondK: 64,
-    secK2: 12,
-    secK3: 10,
-    secK4_helix: 6,
-    secK4_other: 0.8,
-    angleK: 18,
-    angleTheta0: 106.0 * DEG,
-    centerK: 0.02,
+    secK2: 8,
+    secK3: 6.5,
+    secK4_helix: 4.5,
+    secK4_other: 0.4,
+    angleK: 10,
+    angleTheta0: 104.0 * DEG,
+    centerK: 0.014,
     boxHalf: 45,
     wallK: 12,
     wallShell: 4,
-    repEpsIntra: 1.2,
-    repEpsInter: 2.6,
-    repSigmaScaleIntra: 1.0,
-    repSigmaScaleInter: 1.12,
-    stericMinScale: 0.9,
-    attrSigma: 8.8,
-    attrEpsStart: 0.08,
-    attrEpsEnd: 0.65,
-    attrCut: 18,
+    repEpsIntra: 1.8,
+    repEpsInter: 4.1,
+    repSigmaScaleIntra: 1.05,
+    repSigmaScaleInter: 1.2,
+    stericMinScale: 0.98,
+    attrSigma: 7.6,
+    attrEpsStart: 0.05,
+    attrEpsEnd: 0.45,
+    attrCut: 14.5,
     nonbondStrideIntra: 2,
     nonbondStrideInter: 1,
     neighborListEnabled: true,
@@ -99,20 +99,20 @@
     clashDistance: 3.0,
     dt: 0.02,
     gamma: 0.75,
-    tempStart: 8.0,
-    tempEnd: 2.8,
-    maxForce: 70,
-    compactK: 0.06,
+    tempStart: 8.2,
+    tempEnd: 3.2,
+    maxForce: 85,
+    compactK: 0.04,
     compactHydroMin: 0.3,
     maxSpeed: 12,
     maxStep: 0.45,
-    bondConstraintIters: 5
+    bondConstraintIters: 6
   };
 
   const SECONDARY_TARGETS = {
-    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 6.0, dihPhi0: 50 * DEG },
-    beta: { d2: 6.5, d3: 8.8, d4: 11.2, dihK: 2.2, dihPhi0: -165 * DEG },
-    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.5, dihPhi0: 0 }
+    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 4.6, dihPhi0: 50 * DEG },
+    beta: { d2: 6.2, d3: 8.2, d4: 10.0, dihK: 1.2, dihPhi0: -162 * DEG },
+    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.35, dihPhi0: 0 }
   };
 
   const RESIDUE_LIBRARY = [
@@ -378,13 +378,92 @@
     return rand(-115, 115) * DEG;
   }
 
+  function enforceChainBondLengths(ca, bond, iterations) {
+    for (let it = 0; it < iterations; it++) {
+      for (let i = 0; i < ca.length - 1; i++) {
+        const p0 = ca[i];
+        const p1 = ca[i + 1];
+        const dx = p1[0] - p0[0];
+        const dy = p1[1] - p0[1];
+        const dz = p1[2] - p0[2];
+        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (r < 1e-8) continue;
+        const corr = 0.5 * (r - bond) / r;
+        const cx = corr * dx;
+        const cy = corr * dy;
+        const cz = corr * dz;
+        p0[0] += cx; p0[1] += cy; p0[2] += cz;
+        p1[0] -= cx; p1[1] -= cy; p1[2] -= cz;
+      }
+    }
+  }
+
+  function compactifyInitialChain(ca, center, targetRadius) {
+    const minDist = 2.95;
+    const minDist2 = minDist * minDist;
+    for (let it = 0; it < 4; it++) {
+      let cmx = 0, cmy = 0, cmz = 0;
+      for (let i = 0; i < ca.length; i++) {
+        cmx += ca[i][0];
+        cmy += ca[i][1];
+        cmz += ca[i][2];
+      }
+      const inv = 1 / ca.length;
+      cmx *= inv; cmy *= inv; cmz *= inv;
+
+      for (let i = 0; i < ca.length; i++) {
+        const p = ca[i];
+        const toCenterX = center[0] - p[0];
+        const toCenterY = center[1] - p[1];
+        const toCenterZ = center[2] - p[2];
+        const toCmX = cmx - p[0];
+        const toCmY = cmy - p[1];
+        const toCmZ = cmz - p[2];
+        p[0] += 0.025 * toCenterX + 0.012 * toCmX + rand(-0.14, 0.14);
+        p[1] += 0.025 * toCenterY + 0.012 * toCmY + rand(-0.14, 0.14);
+        p[2] += 0.025 * toCenterZ + 0.012 * toCmZ + rand(-0.14, 0.14);
+
+        const rx = p[0] - center[0];
+        const ry = p[1] - center[1];
+        const rz = p[2] - center[2];
+        const r = Math.sqrt(rx * rx + ry * ry + rz * rz);
+        if (r > targetRadius && r > 1e-8) {
+          const s = targetRadius / r;
+          p[0] = center[0] + rx * s;
+          p[1] = center[1] + ry * s;
+          p[2] = center[2] + rz * s;
+        }
+      }
+
+      for (let i = 0; i < ca.length; i++) {
+        for (let j = i + 3; j < ca.length; j++) {
+          const dx = ca[j][0] - ca[i][0];
+          const dy = ca[j][1] - ca[i][1];
+          const dz = ca[j][2] - ca[i][2];
+          const d2 = dx * dx + dy * dy + dz * dz;
+          if (d2 >= minDist2 || d2 < 1e-12) continue;
+          const d = Math.sqrt(d2);
+          const push = 0.5 * (minDist - d) / d;
+          const px = push * dx;
+          const py = push * dy;
+          const pz = push * dz;
+          ca[i][0] -= px; ca[i][1] -= py; ca[i][2] -= pz;
+          ca[j][0] += px; ca[j][1] += py; ca[j][2] += pz;
+        }
+      }
+
+      enforceChainBondLengths(ca, SIM.bondLength, 2);
+    }
+  }
+
   function buildInitialCaChain(length, center, ss) {
     const ca = new Array(length);
     const frame = randomFrame();
     const bond = SIM.bondLength;
     const theta = SIM.angleTheta0;
+    const seedRadius = Math.max(13.0, Math.min(20.0, 0.34 * length * bond));
 
-    ca[0] = add(center, scale(frame.x, -0.6 * bond));
+    ca[0] = add(center, scale(frame.x, rand(-1.2, 1.2)));
     if (length === 1) return ca;
 
     ca[1] = add(ca[0], scale(normalize(add(frame.x, scale(frame.y, rand(-0.25, 0.25)))), bond));
@@ -409,16 +488,24 @@
         }
         if (!ok) continue;
         const radial = norm(sub(candidate, center));
-        if (radial > SIM.initialSpread * 0.45) continue;
+        if (radial > seedRadius) continue;
         placed = candidate;
         break;
       }
       if (!placed) {
-        const fallbackTau = initialDihedralForSs(mode);
-        placed = placeFromThreePoints(ca[i - 3], ca[i - 2], ca[i - 1], bond, theta, fallbackTau);
+        const last = ca[i - 1];
+        const dir = normalize(add(randomUnitVec(), scale(normalize(sub(center, last)), 1.2)));
+        placed = add(last, scale(dir, bond));
+        const radial = norm(sub(placed, center));
+        if (radial > seedRadius) {
+          const inward = normalize(sub(center, last));
+          placed = add(last, scale(inward, bond));
+        }
       }
       ca[i] = placed;
     }
+
+    compactifyInitialChain(ca, center, seedRadius);
     return ca;
   }
 
@@ -726,7 +813,7 @@
       const invN = 1 / frag.length;
       cmx *= invN; cmy *= invN; cmz *= invN;
 
-      const kComp = SIM.compactK * (0.4 + 0.6 * smoothstep(p));
+      const kComp = SIM.compactK * (0.65 + 0.75 * smoothstep(p));
       for (let i = 0; i < frag.length; i++) {
         const hydro = frag.residues[i].hydro;
         const w = SIM.compactHydroMin + (1 - SIM.compactHydroMin) * hydro;
@@ -802,7 +889,7 @@
               const sigmaPair = 0.5 * (a.residue.size + b.residue.size);
               const hydroPair = 0.5 * (a.residue.hydro + b.residue.hydro);
               const qq = a.residue.charge * b.residue.charge;
-              const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.65 : 1.0;
+              const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.82 : 1.0;
               const sigmaScale = same ? SIM.repSigmaScaleIntra : SIM.repSigmaScaleInter;
               const repEps = same ? SIM.repEpsIntra : SIM.repEpsInter;
 
@@ -825,7 +912,9 @@
                 pairComputed += 1;
               }
               if (!same || Math.abs(a.i - b.i) > 4) {
-                const pairAttr = attr * (0.25 + 0.75 * hydroPair) * electroBias;
+                const seqSep = Math.abs(a.i - b.i);
+                const sameChainBias = same ? (seqSep > 8 ? 1.06 : 1.0) : 0.9;
+                const pairAttr = attr * (0.12 + 0.45 * hydroPair) * electroBias * sameChainBias;
                 if (d2 < attrCut2) {
                   potential += applyAttractiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, SIM.attrSigma, pairAttr, SIM.attrCut);
                   pairComputed += 1;
@@ -932,6 +1021,30 @@
     return normalize(add(add(scale(t, u), scale(n, vComp)), scale(b, w)));
   }
 
+  function rotateNormalBinormal(n, b, angle) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    const nr = [
+      c * n[0] + s * b[0],
+      c * n[1] + s * b[1],
+      c * n[2] + s * b[2]
+    ];
+    const br = [
+      -s * n[0] + c * b[0],
+      -s * n[1] + c * b[1],
+      -s * n[2] + c * b[2]
+    ];
+    return { n: normalize(nr), b: normalize(br) };
+  }
+
+  function hash01(a, b, c) {
+    let x = (a * 374761393 + b * 668265263 + c * 2246822519) | 0;
+    x = (x ^ (x >>> 13)) | 0;
+    x = Math.imul(x, 1274126177);
+    x ^= x >>> 16;
+    return (x >>> 0) / 4294967296;
+  }
+
   function placeFromFrame(origin, t, n, b, u, vComp, w, length) {
     return add(origin, scale(frameDirection(t, n, b, u, vComp, w), length));
   }
@@ -1008,6 +1121,14 @@
 
   function rebuildAllAtoms(fragment, includeSidechains) {
     const atoms = [];
+    let cmx = 0, cmy = 0, cmz = 0;
+    for (let i = 0; i < fragment.length; i++) {
+      cmx += fragment.ca[i][0];
+      cmy += fragment.ca[i][1];
+      cmz += fragment.ca[i][2];
+    }
+    const inv = fragment.length > 0 ? 1 / fragment.length : 0;
+    cmx *= inv; cmy *= inv; cmz *= inv;
 
     for (let i = 0; i < fragment.length; i++) {
       const residue = fragment.residues[i];
@@ -1041,8 +1162,31 @@
       atoms.push({ name: "O", el: "O", residue: resName, res, p: O });
 
       if (includeSidechains) {
+        const uN = normalize(sub(N, ca));
+        const uC = normalize(sub(C, ca));
+        let cbDir = normalize(add(
+          add(scale(uN, 0.58), scale(uC, 0.57)),
+          scale(cross(uN, uC), 0.54)
+        ));
+
+        // Keep sidechains from collapsing into a single inward-facing fan,
+        // but avoid a hard global flip that can synchronize entire loops.
+        const outDir = normalize(sub(ca, [cmx, cmy, cmz]));
+        cbDir = normalize(add(scale(cbDir, 0.72), scale(outDir, 0.5)));
+
+        let tSc = normalize(sub(C, N));
+        if (norm(tSc) < 1e-10) tSc = t;
+        let bSc = normalize(cross(tSc, cbDir));
+        if (norm(bSc) < 1e-10) bSc = b;
+        let nSc = normalize(cross(bSc, tSc));
+        if (dot(nSc, cbDir) < 0) nSc = scale(nSc, -1);
+
+        const h = hash01(fragment.id + 1, i + 1, resName.charCodeAt(0));
+        const parity = (i & 1) ? 1 : -1;
+        const chiLike = parity * (48 * DEG) + (h - 0.5) * (220 * DEG);
+        const sideFrame = rotateNormalBinormal(nSc, bSc, chiLike);
         const atomMap = { N, CA: ca, C, O };
-        const sidechain = buildSidechainAtoms(resName, atomMap, t, n, b, res);
+        const sidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
         for (const atom of sidechain) atoms.push(atom);
       }
     }
