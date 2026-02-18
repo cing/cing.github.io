@@ -73,40 +73,45 @@
     finalSpread: 14,
     bondLength: 3.8,
     bondK: 64,
-    secK2: 16,
-    secK3: 14,
-    secK4_helix: 7,
-    secK4_other: 2,
+    secK2: 12,
+    secK3: 10,
+    secK4_helix: 6,
+    secK4_other: 0.8,
     angleK: 18,
-    angleTheta0: 111.0 * DEG,
-    centerK: 0.035,
+    angleTheta0: 106.0 * DEG,
+    centerK: 0.02,
     boxHalf: 45,
     wallK: 12,
     wallShell: 4,
-    repSigma: 3.3,
-    repEps: 1.2,
+    repEpsIntra: 1.2,
+    repEpsInter: 2.6,
+    repSigmaScaleIntra: 1.0,
+    repSigmaScaleInter: 1.12,
+    stericMinScale: 0.9,
     attrSigma: 8.8,
     attrEpsStart: 0.08,
     attrEpsEnd: 0.65,
     attrCut: 18,
-    nonbondStride: 2,
+    nonbondStrideIntra: 2,
+    nonbondStrideInter: 1,
     neighborListEnabled: true,
     neighborCellSize: 18,
     clashDistance: 3.0,
-    dt: 0.026,
+    dt: 0.02,
     gamma: 0.75,
     tempStart: 8.0,
     tempEnd: 2.8,
-    maxForce: 55,
+    maxForce: 70,
     compactK: 0.06,
     compactHydroMin: 0.3,
     maxSpeed: 12,
-    maxStep: 0.6
+    maxStep: 0.45,
+    bondConstraintIters: 5
   };
 
   const SECONDARY_TARGETS = {
     helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 6.0, dihPhi0: 50 * DEG },
-    beta: { d2: 6.9, d3: 10.1, d4: 13.2, dihK: 4.0, dihPhi0: -170 * DEG },
+    beta: { d2: 6.5, d3: 8.8, d4: 11.2, dihK: 2.2, dihPhi0: -165 * DEG },
     coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.5, dihPhi0: 0 }
   };
 
@@ -159,6 +164,7 @@
     pairWindowStartMs: 0,
     pairWindowCount: 0,
     pairChecksPerSec: 0,
+    rng: Math.random,
     perf: {
       computeMs: 0,
       drawMs: 0,
@@ -167,7 +173,9 @@
     lastMetrics: {
       clashes: 0,
       contacts: 0,
-      totalPairs: 1
+      totalPairs: 1,
+      clashRate: 0,
+      meanEndToEndNorm: 0
     }
   };
 
@@ -175,8 +183,26 @@
     if (el.status) el.status.textContent = message;
   }
 
+  function createRng(seed) {
+    let t = seed >>> 0;
+    return function () {
+      t += 0x6D2B79F5;
+      let x = Math.imul(t ^ (t >>> 15), t | 1);
+      x ^= x + Math.imul(x ^ (x >>> 7), x | 61);
+      return ((x ^ (x >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function setRandomSeed(seed) {
+    state.rng = createRng(seed >>> 0);
+  }
+
+  function random() {
+    return state.rng();
+  }
+
   function rand(min, max) {
-    return min + Math.random() * (max - min);
+    return min + random() * (max - min);
   }
 
   function randInt(min, max) {
@@ -218,8 +244,8 @@
   }
 
   function gauss() {
-    const u1 = Math.max(1e-12, Math.random());
-    const u2 = Math.random();
+    const u1 = Math.max(1e-12, random());
+    const u2 = random();
     return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
   }
 
@@ -268,8 +294,8 @@
   }
 
   function randomUnitVec() {
-    const u = Math.random();
-    const z = 2 * Math.random() - 1;
+    const u = random();
+    const z = 2 * random() - 1;
     const r = Math.sqrt(Math.max(0, 1 - z * z));
     const t = 2 * Math.PI * u;
     return [r * Math.cos(t), r * Math.sin(t), z];
@@ -334,11 +360,13 @@
   function seedSecondaryTypes(fragment, p) {
     for (let i = 0; i < fragment.length; i++) fragment.ss[i] = "coil";
 
-    const motifs = randInt(3, Math.max(3, Math.floor(fragment.length / 3)));
-    const helixChance = 0.55 + 0.2 * p;
+    const motifs = randInt(2, Math.max(3, Math.floor(fragment.length / 4)));
+    const helixChance = 0.72 + 0.18 * p;
+    const betaChance = 0.12 * (1 - 0.4 * p);
     for (let m = 0; m < motifs; m++) {
-      const type = Math.random() < helixChance ? "helix" : "beta";
-      const span = type === "helix" ? randInt(5, 10) : randInt(3, 7);
+      const toss = random();
+      const type = toss < helixChance ? "helix" : toss < helixChance + betaChance ? "beta" : "coil";
+      const span = type === "helix" ? randInt(4, 8) : type === "beta" ? randInt(3, 5) : randInt(2, 4);
       const start = randInt(0, Math.max(0, fragment.length - span));
       for (let i = start; i < start + span; i++) fragment.ss[i] = type;
     }
@@ -346,30 +374,50 @@
 
   function initialDihedralForSs(ssType) {
     if (ssType === "helix") return rand(46, 54) * DEG;
-    if (ssType === "beta") return (Math.random() < 0.5 ? -1 : 1) * rand(160, 175) * DEG;
-    return rand(-80, 80) * DEG;
+    if (ssType === "beta") return (random() < 0.5 ? -1 : 1) * rand(150, 168) * DEG;
+    return rand(-115, 115) * DEG;
   }
 
   function buildInitialCaChain(length, center, ss) {
     const ca = new Array(length);
     const frame = randomFrame();
     const bond = SIM.bondLength;
-    const theta = 111.0 * DEG;
+    const theta = SIM.angleTheta0;
 
-    const start = add(center, scale(frame.x, -0.5 * bond * (length - 1)));
-    ca[0] = start;
+    ca[0] = add(center, scale(frame.x, -0.6 * bond));
     if (length === 1) return ca;
 
-    ca[1] = add(ca[0], scale(frame.x, bond));
+    ca[1] = add(ca[0], scale(normalize(add(frame.x, scale(frame.y, rand(-0.25, 0.25)))), bond));
     if (length === 2) return ca;
 
-    const dir2 = normalize(add(scale(frame.x, -Math.cos(theta)), scale(frame.y, Math.sin(theta))));
+    const dir2 = normalize(add(scale(frame.x, -Math.cos(theta)), scale(frame.y, Math.sin(theta) * rand(0.8, 1.2))));
     ca[2] = add(ca[1], scale(dir2, bond));
 
+    const localSteric2 = Math.pow(Math.max(2.8, SIM.bondLength * 0.8), 2);
     for (let i = 3; i < length; i++) {
       const mode = ss[i - 1];
-      const tau = initialDihedralForSs(mode);
-      ca[i] = placeFromThreePoints(ca[i - 3], ca[i - 2], ca[i - 1], bond, theta, tau);
+      let placed = null;
+      for (let attempt = 0; attempt < 24; attempt++) {
+        const tau = initialDihedralForSs(mode) + rand(-24, 24) * DEG;
+        const candidate = placeFromThreePoints(ca[i - 3], ca[i - 2], ca[i - 1], bond, theta, tau);
+        let ok = true;
+        for (let j = 0; j < i - 2; j++) {
+          if (distanceSq(candidate, ca[j]) < localSteric2) {
+            ok = false;
+            break;
+          }
+        }
+        if (!ok) continue;
+        const radial = norm(sub(candidate, center));
+        if (radial > SIM.initialSpread * 0.45) continue;
+        placed = candidate;
+        break;
+      }
+      if (!placed) {
+        const fallbackTau = initialDihedralForSs(mode);
+        placed = placeFromThreePoints(ca[i - 3], ca[i - 2], ca[i - 1], bond, theta, fallbackTau);
+      }
+      ca[i] = placed;
     }
     return ca;
   }
@@ -553,7 +601,7 @@
     const sr2 = sigma2 * invR2;
     const sr6 = sr2 * sr2 * sr2;
     const sr12 = sr6 * sr6;
-    const fmag = (24 * eps * (2 * sr12 - sr6)) * Math.sqrt(invR2) * Math.sqrt(invR2);
+    const fmag = (24 * eps * (2 * sr12 - sr6)) * invR2;
 
     const fx = fmag * d[0];
     const fy = fmag * d[1];
@@ -583,6 +631,20 @@
     addForce(fragB, j, fx, fy, fz);
 
     return -eps * g;
+  }
+
+  function computeMeanEndToEndNorm() {
+    if (!state.fragments.length) return 0;
+    let sum = 0;
+    for (const frag of state.fragments) {
+      if (frag.length < 2) continue;
+      const first = frag.ca[0];
+      const last = frag.ca[frag.length - 1];
+      const r = Math.sqrt(distanceSq(last, first));
+      const maxLen = SIM.bondLength * (frag.length - 1);
+      sum += maxLen > 1e-8 ? r / maxLen : 0;
+    }
+    return sum / state.fragments.length;
   }
 
   function computeForces(p) {
@@ -683,13 +745,15 @@
     const invCellSize = 1 / cellSize;
     const beads = [];
     const grid = new Map();
-    const stride = Math.max(1, SIM.nonbondStride | 0);
+    const strideIntra = Math.max(1, SIM.nonbondStrideIntra | 0);
+    const strideInter = Math.max(1, SIM.nonbondStrideInter | 0);
+    const useFullInter = strideInter <= 1;
     const attrCut2 = SIM.attrCut * SIM.attrCut;
     const clashCut2 = SIM.clashDistance * SIM.clashDistance;
 
     for (let fi = 0; fi < state.fragments.length; fi++) {
       const frag = state.fragments[fi];
-      for (let i = 0; i < frag.length; i += stride) {
+      for (let i = 0; i < frag.length; i++) {
         const p0 = frag.ca[i];
         const cx = Math.floor(p0[0] * invCellSize);
         const cy = Math.floor(p0[1] * invCellSize);
@@ -726,6 +790,8 @@
               const b = beads[bi];
               const same = a.fi === b.fi;
               if (same && Math.abs(a.i - b.i) < 3) continue;
+              if (same && ((a.i % strideIntra) !== 0 || (b.i % strideIntra) !== 0)) continue;
+              if (!same && !useFullInter && ((a.i % strideInter) !== 0 || (b.i % strideInter) !== 0)) continue;
               pairs += 1;
 
               const dVec = sub(b.p, a.p);
@@ -737,11 +803,25 @@
               const hydroPair = 0.5 * (a.residue.hydro + b.residue.hydro);
               const qq = a.residue.charge * b.residue.charge;
               const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.65 : 1.0;
+              const sigmaScale = same ? SIM.repSigmaScaleIntra : SIM.repSigmaScaleInter;
+              const repEps = same ? SIM.repEpsIntra : SIM.repEpsInter;
 
-              const repSigma = Math.max(2.8, sigmaPair);
+              const repSigma = Math.max(2.8, sigmaPair * sigmaScale);
+              const stericFloor = SIM.stericMinScale * repSigma;
+              const stericFloor2 = stericFloor * stericFloor;
+              if (d2 < stericFloor2) {
+                const dnorm = Math.sqrt(Math.max(1e-12, d2));
+                const push = 0.5 * repEps * (stericFloor - dnorm) / dnorm;
+                const px = push * dVec[0];
+                const py = push * dVec[1];
+                const pz = push * dVec[2];
+                addForce(a.frag, a.i, -px, -py, -pz);
+                addForce(b.frag, b.i, px, py, pz);
+                potential += 0.5 * repEps * (stericFloor - dnorm) * (stericFloor - dnorm);
+              }
               const repCut = repSigma * Math.pow(2, 1 / 6);
               if (d2 < repCut * repCut) {
-                potential += applyRepulsiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, repSigma, SIM.repEps);
+                potential += applyRepulsiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, repSigma, repEps);
                 pairComputed += 1;
               }
               if (!same || Math.abs(a.i - b.i) > 4) {
@@ -767,7 +847,9 @@
     state.lastMetrics = {
       clashes,
       contacts,
-      totalPairs: Math.max(1, pairs)
+      totalPairs: Math.max(1, pairs),
+      clashRate: clashes / Math.max(1, pairs),
+      meanEndToEndNorm: computeMeanEndToEndNorm()
     };
     state.perf.computeMs = ewma(state.perf.computeMs, performance.now() - t0, 0.25);
 
@@ -843,7 +925,7 @@
       }
     }
 
-    enforceBondConstraints(3);
+    enforceBondConstraints(SIM.bondConstraintIters);
   }
 
   function frameDirection(t, n, b, u, vComp, w) {
@@ -1215,8 +1297,11 @@
   function updateHud() {
   }
 
-  function reseedSystem() {
-    state.seed += 1;
+  function reseedSystem(seedOverride) {
+    if (Number.isFinite(seedOverride)) state.seed = seedOverride >>> 0;
+    else state.seed = (state.seed + 1) >>> 0;
+    setRandomSeed(state.seed);
+
     state.cycle = 0;
     state.cps = 0;
     state.cpsWindowStartMs = 0;
@@ -1228,6 +1313,13 @@
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
     state.fragments = [];
+    state.lastMetrics = {
+      clashes: 0,
+      contacts: 0,
+      totalPairs: 1,
+      clashRate: 0,
+      meanEndToEndNorm: 0
+    };
     pickAccentColor();
 
     const centers = [];
@@ -1246,6 +1338,96 @@
       integrateSubstep(p);
     }
     state.cycle += 1;
+  }
+
+  function runMetrics(options) {
+    const opts = options || {};
+    const seeds = Array.isArray(opts.seeds) && opts.seeds.length ? opts.seeds : [11, 17, 23, 29, 37];
+    const warmupCycles = Math.max(0, opts.warmupCycles | 0);
+    const measureCycles = Math.max(1, opts.measureCycles | 0);
+    const wasRunning = state.running;
+
+    state.running = false;
+    const aggregate = {
+      seeds: seeds.length,
+      warmupCycles,
+      measureCycles,
+      meanClashRate: 0,
+      meanClashes: 0,
+      meanPairs: 0,
+      meanContacts: 0,
+      meanEndToEndNorm: 0,
+      perSeed: []
+    };
+
+    try {
+      for (let s = 0; s < seeds.length; s++) {
+        const seed = seeds[s] | 0;
+        reseedSystem(seed);
+        for (let i = 0; i < warmupCycles; i++) integrateFrame();
+
+        let clashRateSum = 0;
+        let clashesSum = 0;
+        let pairsSum = 0;
+        let contactsSum = 0;
+        let endToEndSum = 0;
+        for (let i = 0; i < measureCycles; i++) {
+          integrateFrame();
+          clashRateSum += state.lastMetrics.clashRate;
+          clashesSum += state.lastMetrics.clashes;
+          pairsSum += state.lastMetrics.totalPairs;
+          contactsSum += state.lastMetrics.contacts;
+          endToEndSum += state.lastMetrics.meanEndToEndNorm;
+        }
+
+        const result = {
+          seed,
+          meanClashRate: clashRateSum / measureCycles,
+          meanClashes: clashesSum / measureCycles,
+          meanPairs: pairsSum / measureCycles,
+          meanContacts: contactsSum / measureCycles,
+          meanEndToEndNorm: endToEndSum / measureCycles
+        };
+        aggregate.perSeed.push(result);
+        aggregate.meanClashRate += result.meanClashRate;
+        aggregate.meanClashes += result.meanClashes;
+        aggregate.meanPairs += result.meanPairs;
+        aggregate.meanContacts += result.meanContacts;
+        aggregate.meanEndToEndNorm += result.meanEndToEndNorm;
+      }
+
+      const inv = 1 / seeds.length;
+      aggregate.meanClashRate *= inv;
+      aggregate.meanClashes *= inv;
+      aggregate.meanPairs *= inv;
+      aggregate.meanContacts *= inv;
+      aggregate.meanEndToEndNorm *= inv;
+      return aggregate;
+    } finally {
+      state.running = wasRunning;
+      reseedSystem();
+      queueDraw(true).catch(function () {});
+    }
+  }
+
+  function installDebugInterface() {
+    window.__simDebug = {
+      runMetrics,
+      snapshot: function () {
+        return {
+          cycle: state.cycle,
+          seed: state.seed,
+          running: state.running,
+          metrics: {
+            clashes: state.lastMetrics.clashes,
+            contacts: state.lastMetrics.contacts,
+            totalPairs: state.lastMetrics.totalPairs,
+            clashRate: state.lastMetrics.clashRate,
+            meanEndToEndNorm: state.lastMetrics.meanEndToEndNorm
+          }
+        };
+      }
+    };
   }
 
   async function loop() {
@@ -1313,6 +1495,7 @@
     await applyIllustrativeStyle();
     enforceNoAutoCenter();
 
+    installDebugInterface();
     reseedSystem();
     await queueDraw(true);
     lockFixedCameraView();
