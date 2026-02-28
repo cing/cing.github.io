@@ -174,7 +174,8 @@
     perf: {
       computeMs: 0,
       drawMs: 0,
-      buildPdbMs: 0
+      buildPdbMs: 0,
+      renderFps: 0
     },
     lastMetrics: {
       clashes: 0,
@@ -1402,8 +1403,13 @@
     state.activeDataRef = dataCell.ref;
     state.activeStructures = latest ? [latest] : [];
     state.drawCount += 1;
-    const drawMs = performance.now() - drawStart;
+    const drawEnd = performance.now();
+    const drawMs = drawEnd - drawStart;
     state.perf.drawMs = ewma(state.perf.drawMs, drawMs, 0.25);
+    if (state.lastDrawMs > 0) {
+      const interval = drawEnd - state.lastDrawMs;
+      if (interval > 0) state.perf.renderFps = ewma(state.perf.renderFps, 1000 / interval, 0.15);
+    }
     if (drawMs > 45) {
       state.dynamicRenderIntervalMs = Math.min(SIM.maxRenderIntervalMs, state.dynamicRenderIntervalMs * 1.15);
     } else if (drawMs < 20) {
@@ -1702,7 +1708,10 @@
           console.error(drawErr);
           setStatus(`Draw failed: ${drawErr && drawErr.message ? drawErr.message : "unknown error"}`);
         });
-        setStatus("Simulating protein dynamics...");
+        const fps = Math.round(state.perf.renderFps);
+        setStatus(fps > 0
+          ? `Simulating protein dynamics... (${fps} FPS)`
+          : "Simulating protein dynamics...");
       }
     } catch (err) {
       console.error(err);
