@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Christopher Ing</title>
   <link rel="icon" type="image/svg+xml" href="./assets/favicon-c-sphere.svg">
-  <link rel="stylesheet" href="https://unpkg.com/molstar/build/viewer/molstar.css">
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
@@ -55,7 +54,107 @@
     <p id="status" class="status">Loading viewer...</p>
   </aside>
 
-  <script src="https://unpkg.com/molstar/build/viewer/molstar.js"></script>
-  <script src="./app.js"></script>
+  <script>
+    (function () {
+      "use strict";
+
+      const sources = [
+        {
+          label: "jsDelivr",
+          css: "https://cdn.jsdelivr.net/npm/molstar/build/viewer/molstar.css",
+          js: "https://cdn.jsdelivr.net/npm/molstar/build/viewer/molstar.js"
+        },
+        {
+          label: "unpkg",
+          css: "https://unpkg.com/molstar/build/viewer/molstar.css",
+          js: "https://unpkg.com/molstar/build/viewer/molstar.js"
+        },
+        {
+          label: "local-vendor",
+          css: "./vendor/molstar.css",
+          js: "./vendor/molstar.js"
+        }
+      ];
+
+      function ensureCss(href) {
+        if (!href) return;
+        if (document.querySelector('link[data-molstar-css="' + href + '"]')) return;
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = href;
+        link.dataset.molstarCss = href;
+        document.head.appendChild(link);
+      }
+
+      function loadScriptWithTimeout(src, timeoutMs) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          let done = false;
+          const timer = window.setTimeout(() => {
+            if (done) return;
+            done = true;
+            script.remove();
+            reject(new Error("timeout"));
+          }, timeoutMs);
+
+          script.async = true;
+          script.src = src;
+          script.onload = function () {
+            if (done) return;
+            done = true;
+            window.clearTimeout(timer);
+            resolve();
+          };
+          script.onerror = function () {
+            if (done) return;
+            done = true;
+            window.clearTimeout(timer);
+            script.remove();
+            reject(new Error("load-error"));
+          };
+          document.head.appendChild(script);
+        });
+      }
+
+      function setLoadStatus(text) {
+        const status = document.getElementById("status");
+        if (status) status.textContent = text;
+      }
+
+      async function bootstrap() {
+        setLoadStatus("Loading Mol*...");
+        let loadedFrom = null;
+
+        for (const source of sources) {
+          try {
+            ensureCss(source.css);
+            await loadScriptWithTimeout(source.js, 9000);
+            if (window.molstar && window.molstar.Viewer) {
+              loadedFrom = source.label;
+              break;
+            }
+          } catch (_) {
+            // Try next source.
+          }
+        }
+
+        if (!loadedFrom) {
+          setLoadStatus("Mol* failed to load from CDN/local fallback.");
+          return;
+        }
+
+        const app = document.createElement("script");
+        app.src = "./app.js";
+        app.async = true;
+        app.dataset.molstarSource = loadedFrom;
+        document.body.appendChild(app);
+      }
+
+      bootstrap().catch(function (err) {
+        console.error("Bootstrap failed:", err);
+        setLoadStatus("Initialization failed before simulation startup.");
+      });
+    })();
+  </script>
 </body>
 </html>

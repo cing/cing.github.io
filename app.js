@@ -66,11 +66,11 @@
     fragmentCount: 8,
     minResidues: 18,
     maxResidues: 30,
-    frameMs: 12,
-    substepsPerFrame: 2,
-    renderIntervalMs: 80,
-    minRenderIntervalMs: 30,
-    maxRenderIntervalMs: 150,
+    frameMs: 24,
+    substepsPerFrame: 1,
+    renderIntervalMs: 40,
+    minRenderIntervalMs: 20,
+    maxRenderIntervalMs: 100,
     renderAtomMode: "full",
     fullAtomRenderEvery: 8,
     totalCycles: 4000,
@@ -154,6 +154,7 @@
     viewer: null,
     fragments: [],
     activeStructures: [],
+    activeDataRef: null,
     cycle: 0,
     seed: 0,
     running: true,
@@ -1367,11 +1368,15 @@
     const includeSidechains = SIM.renderAtomMode === "full" ||
       (SIM.renderAtomMode === "mixed" && state.drawCount % SIM.fullAtomRenderEvery === 0);
     const pdb = buildPdb(includeSidechains);
-    const previousStructures = state.activeStructures.slice();
+    const previousDataRef = state.activeDataRef;
 
-    await state.viewer.loadStructureFromData(pdb, "pdb", {
-      dataLabel: `cg-seed-${state.seed}-cycle-${state.cycle}`
-    });
+    // Load new structure — manually replicate loadStructureFromData so we can
+    // capture the root data ref for clean deletion later.
+    const dataCell = await plugin.builders.data.rawData(
+      { data: pdb, label: `cg-seed-${state.seed}-cycle-${state.cycle}` }
+    );
+    const trajectory = await plugin.builders.structure.parseTrajectory(dataCell, "pdb");
+    await plugin.builders.structure.hierarchy.applyPreset(trajectory, "default");
 
     const structures = plugin.managers.structure.hierarchy.selection.structures;
     const latest = structures.length ? structures[structures.length - 1] : null;
@@ -1387,9 +1392,14 @@
       }
     }
 
-    if (previousStructures.length) {
-      await plugin.managers.structure.hierarchy.remove(previousStructures, true);
+    // Delete the previous data node and its entire subtree (trajectory,
+    // model, structure, representations) from the state tree.  This is
+    // more thorough than hierarchy.remove which only prunes the structure
+    // level and can leave orphaned data / trajectory nodes behind.
+    if (previousDataRef) {
+      await plugin.state.data.build().delete(previousDataRef).commit();
     }
+    state.activeDataRef = dataCell.ref;
     state.activeStructures = latest ? [latest] : [];
     state.drawCount += 1;
     const drawMs = performance.now() - drawStart;
@@ -1557,6 +1567,7 @@
     state.drawCount = 0;
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
+    state.activeDataRef = null;
     state.fragments = [];
     state.lastMetrics = {
       clashes: 0,
@@ -1764,10 +1775,10 @@
       state.busy = true;
       try {
         setStatus("Reseeding...");
-        const oldStructures = state.activeStructures.slice();
+        const oldDataRef = state.activeDataRef;
         reseedSystem();
-        if (oldStructures.length) {
-          await state.viewer.plugin.managers.structure.hierarchy.remove(oldStructures, true);
+        if (oldDataRef) {
+          await state.viewer.plugin.state.data.build().delete(oldDataRef).commit();
         }
         await queueDraw(true);
         lockFixedCameraView();
