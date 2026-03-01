@@ -81,7 +81,7 @@
     secK2: 7.2,
     secK3: 5.8,
     secK4_helix: 3.8,
-    secK4_other: 0.4,
+    secK4_other: 1.6,
     angleK: 8.5,
     angleTheta0: 101.0 * DEG,
     centerK: 0.014,
@@ -117,7 +117,7 @@
   const SECONDARY_TARGETS = {
     helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 3.9, dihPhi0: 50 * DEG },
     beta: { d2: 6.0, d3: 7.8, d4: 9.4, dihK: 0.95, dihPhi0: -160 * DEG },
-    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 0.35, dihPhi0: 0 }
+    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 1.2, dihPhi0: 0 }
   };
 
   const RESIDUE_LIBRARY = [
@@ -801,7 +801,49 @@
       for (let i = 0; i < frag.length - 3; i++) {
         const ss = frag.ss[i];
         const targets = SECONDARY_TARGETS[ss];
-        potential += applyDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihK, targets.dihPhi0);
+        // For coil regions, alternate the dihedral target sign so
+        // consecutive residues don't all bend the same way.  This
+        // breaks the uniform-curvature arc that forms when compaction
+        // forces dominate.
+        let phi0 = targets.dihPhi0;
+        if (ss === "coil") {
+          phi0 = (i % 2 === 0 ? 1 : -1) * 65 * DEG;
+        }
+        potential += applyDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihK, phi0);
+      }
+
+      // Anti-arc force: penalize uniform curvature over consecutive
+      // windows.  When three consecutive beads i, i+2, i+4 form a
+      // smooth arc (the chord directions are too parallel), push the
+      // midpoint outward to break the arc.
+      for (let i = 0; i < frag.length - 4; i++) {
+        if (frag.ss[i] === "helix" && frag.ss[i + 2] === "helix") continue;
+        const a = frag.ca;
+        const v1 = sub(a[i + 2], a[i]);
+        const v2 = sub(a[i + 4], a[i + 2]);
+        const v1n = norm(v1);
+        const v2n = norm(v2);
+        if (v1n < 1e-8 || v2n < 1e-8) continue;
+        const cosAngle = dot(v1, v2) / (v1n * v2n);
+        // Uniform arc has cosAngle close to 1; we want to penalize
+        // above a threshold and push the midpoint outward (opposite
+        // to the curvature center).
+        if (cosAngle > 0.4) {
+          const strength = 3.5 * (cosAngle - 0.4) * (cosAngle - 0.4);
+          // The curvature center lies in the direction
+          // perpendicular to the chord, on the concave side.
+          // toStart + toEnd points toward the concave side.
+          const toStart = normalize(sub(a[i], a[i + 2]));
+          const toEnd = normalize(sub(a[i + 4], a[i + 2]));
+          const inward = add(toStart, toEnd);
+          const inLen = norm(inward);
+          if (inLen < 1e-8) continue;
+          // Push midpoint AWAY from the arc center (outward)
+          const outward = scale(inward, -strength / inLen);
+          addForce(frag, i + 2, outward[0], outward[1], outward[2]);
+          addForce(frag, i, -0.5 * outward[0], -0.5 * outward[1], -0.5 * outward[2]);
+          addForce(frag, i + 4, -0.5 * outward[0], -0.5 * outward[1], -0.5 * outward[2]);
+        }
       }
 
       for (let i = 0; i < frag.length - 4; i++) {
