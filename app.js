@@ -1247,17 +1247,14 @@
       if (includeSidechains) {
         const uN = normalize(sub(N, ca));
         const uC = normalize(sub(C, ca));
+        // Alternate the out-of-plane component to mimic the ~180° peptide
+        // bond flip that makes real CB atoms point to alternating sides of
+        // the backbone.
+        const flip = (i % 2 === 0) ? 1 : -1;
         let cbDir = normalize(add(
           add(scale(uN, 0.58), scale(uC, 0.57)),
-          scale(cross(uN, uC), 0.54)
+          scale(cross(uN, uC), 0.54 * flip)
         ));
-
-        // Keep sidechains from collapsing into a single inward-facing fan,
-        // but avoid a hard global flip that can synchronize entire loops.
-        let outDir = outToCom;
-        if (i === 0 && len > 1) outDir = normalize(sub(ca, fragment.ca[1]));
-        if (i === len - 1 && len > 1) outDir = normalize(sub(ca, fragment.ca[len - 2]));
-        cbDir = normalize(add(scale(cbDir, 0.72), scale(outDir, 0.5)));
 
         let tSc = normalize(sub(C, N));
         if (norm(tSc) < 1e-10) tSc = t;
