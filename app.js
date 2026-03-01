@@ -11,38 +11,59 @@
     0x8e44ad, 0x16a085, 0xd35400, 0xbdc3c7
   ];
 
+  function lerpColor(c1, c2, t) {
+    const r1 = (c1 >> 16) & 0xff, g1 = (c1 >> 8) & 0xff, b1 = c1 & 0xff;
+    const r2 = (c2 >> 16) & 0xff, g2 = (c2 >> 8) & 0xff, b2 = c2 & 0xff;
+    const r = Math.round(r1 + (r2 - r1) * t);
+    const g = Math.round(g1 + (g2 - g1) * t);
+    const b = Math.round(b1 + (b2 - b1) * t);
+    return (r << 16) | (g << 8) | b;
+  }
+
   function registerFixedChainTheme(plugin) {
     const provider = {
       name: "fixed-chain",
-      label: "Fixed Chain Colors",
+      label: "Chain Gradient Colors",
       category: "Chain",
       factory: function (ctx, props) {
         return {
           factory: provider.factory,
-          granularity: "instance",
+          granularity: "group",
           color: function (location) {
+            // Read chain ID → chain index, B-factor → gradient fraction
+            function colorFromUnitElement(unit, elementIdx) {
+              const chainIdx = unit.chainIndex[elementIdx];
+              const chainId = unit.model.atomicHierarchy.chains.auth_asym_id.value(chainIdx);
+              const c = CHAIN_IDS.indexOf(chainId);
+              if (c < 0) return 0x888888;
+              // Palette bright (0-7) → dark (8-15) pairs
+              const bright = CHAIN_PALETTE[c % 8];
+              const dark = CHAIN_PALETTE[(c % 8) + 8];
+              // Read B-factor for gradient position (0-99 → 0-1)
+              var t = 0.5;
+              try {
+                var atomIdx = unit.elements[elementIdx];
+                var bfac = unit.model.atomicConformation.B_iso_or_equiv.value(atomIdx);
+                if (Number.isFinite(bfac)) t = bfac / 99;
+              } catch (_) {}
+              t = Math.max(0, Math.min(1, t));
+              return lerpColor(bright, dark, t);
+            }
+
             if (location && location.kind === "element-location") {
               try {
-                const unit = location.unit;
-                const chainIdx = unit.chainIndex[location.element];
-                const chainId = unit.model.atomicHierarchy.chains.auth_asym_id.value(chainIdx);
-                const c = CHAIN_IDS.indexOf(chainId);
-                if (c >= 0) return CHAIN_PALETTE[c % CHAIN_PALETTE.length];
+                return colorFromUnitElement(location.unit, location.element);
               } catch (e) { /* fall through */ }
             }
             if (location && location.kind === "bond-location") {
               try {
-                const unit = location.aUnit;
-                const chainIdx = unit.chainIndex[location.aIndex];
-                const chainId = unit.model.atomicHierarchy.chains.auth_asym_id.value(chainIdx);
-                const c = CHAIN_IDS.indexOf(chainId);
-                if (c >= 0) return CHAIN_PALETTE[c % CHAIN_PALETTE.length];
+                return colorFromUnitElement(location.aUnit, location.aIndex);
               } catch (e) { /* fall through */ }
             }
             return 0x888888;
           },
           props: props,
-          description: "Fixed per-chain colors"
+          description: "Per-chain gradient colors (N→C)"
         };
       },
       getParams: function () { return {}; },
@@ -82,9 +103,9 @@
     dielectric: 15,
     neighborCellSize: 1.3, // nm
     bondConstraintIters: 8,
-    maxForce: 5000,        // kJ/(mol·nm)
-    maxSpeed: 5.0,         // nm/ps
-    maxStep: 0.02          // nm
+    maxForce: 10000,       // kJ/(mol·nm)
+    maxSpeed: 8.0,         // nm/ps
+    maxStep: 0.04          // nm
   };
 
   // ─── MARTINI bead types and sigmas ───────────────────────────────
@@ -1002,23 +1023,41 @@
     }
   }
 
-  function applyLJ(beadA, beadB, sigma, eps, dVec, r2) {
-    // Full 12-6 LJ with shifted potential at cutoff
+  // WCA radius: sigma * 2^(1/6) — the LJ minimum
+  const TWO_SIXTH = Math.pow(2, 1.0 / 6.0);
+
+  function applyLJ(beadA, beadB, sigma, eps, dVec, r2, repulsiveOnly) {
     const r = Math.sqrt(r2);
-    const cutoff = SIM.ljCutoff;
-    if (r >= cutoff || r < 1e-10) return;
+    // WCA: truncate at r_min for repulsive-only mode (intramolecular)
+    const rMin = sigma * TWO_SIXTH;
+    const cutoff = repulsiveOnly ? rMin : SIM.ljCutoff;
+    if (r >= cutoff) return;
+
+    // Soft-core: when r < 0.6*sigma, cap force linearly to avoid singularity
+    const softR = 0.6 * sigma;
+    if (r < softR) {
+      // Linear repulsion: force at softR extrapolated linearly
+      const srS = sigma / softR;
+      const srS6 = srS * srS * srS * srS * srS * srS;
+      const srS12 = srS6 * srS6;
+      const fAtSoft = 24 * eps * (2 * srS12 - srS6) / (softR * softR);
+      const fmag = fAtSoft;  // constant cap
+      const invR = r > 1e-10 ? 1 / r : 1 / 1e-10;
+      beadA.force[0] -= fmag * dVec[0];
+      beadA.force[1] -= fmag * dVec[1];
+      beadA.force[2] -= fmag * dVec[2];
+      beadB.force[0] += fmag * dVec[0];
+      beadB.force[1] += fmag * dVec[1];
+      beadB.force[2] += fmag * dVec[2];
+      return;
+    }
 
     const invR = 1 / r;
     const sr = sigma * invR;
     const sr6 = sr * sr * sr * sr * sr * sr;
     const sr12 = sr6 * sr6;
 
-    // Shift: compute potential at cutoff to subtract
-    const srC = sigma / cutoff;
-    const srC6 = srC * srC * srC * srC * srC * srC;
-    const srC12 = srC6 * srC6;
-
-    // Force magnitude = -dU/dr = 24*eps*(2*sr12 - sr6)/r
+    // Force = -dU/dr * (dVec/r) => F_A = -fmag*dVec, F_B = +fmag*dVec
     const fmag = 24 * eps * (2 * sr12 - sr6) * invR * invR;
 
     beadA.force[0] -= fmag * dVec[0];
@@ -1145,11 +1184,12 @@
               if (a.fi !== b.fi && r2 < 0.8 * 0.8) contacts++;
 
               const dVec = [dVecX, dVecY, dVecZ];
+              const sameChain = a.fi === b.fi;
 
-              // LJ interaction
+              // LJ: WCA (repulsive-only) for intramolecular, full LJ for inter
               const sigma = pairSigma(a.bead.type, b.bead.type);
               const eps = pairEpsilon(a.bead.type, b.bead.type);
-              applyLJ(a.bead, b.bead, sigma, eps, dVec, r2);
+              applyLJ(a.bead, b.bead, sigma, eps, dVec, r2, sameChain);
 
               // Screened Coulomb for charged pairs
               const qA = beadCharge(a.bead.type);
@@ -1285,7 +1325,7 @@
   const BEAD_TO_ATOM = { BB: "CA", SC1: "CB", SC2: "CG", SC3: "CD", SC4: "CE" };
   const BEAD_TO_ELEMENT = { BB: "C", SC1: "C", SC2: "C", SC3: "C", SC4: "C" };
 
-  function atomLine(serial, atomName, residue, chain, resSeq, x, y, z, element) {
+  function atomLine(serial, atomName, residue, chain, resSeq, x, y, z, element, bfactor) {
     const serialText = String(serial).padStart(5, " ");
     const atomText = atomName.length < 4 ? atomName.padStart(4, " ") : atomName.slice(0, 4);
     const resText = residue.padStart(3, " ");
@@ -1293,15 +1333,15 @@
     const xx = x.toFixed(3).padStart(8, " ");
     const yy = y.toFixed(3).padStart(8, " ");
     const zz = z.toFixed(3).padStart(8, " ");
+    const bf = (bfactor != null ? bfactor : 25).toFixed(2).padStart(6, " ");
     const elText = element.padStart(2, " ");
-    return `ATOM  ${serialText} ${atomText} ${resText} ${chain}${seqText}    ${xx}${yy}${zz}  1.00 25.00           ${elText}`;
+    return `ATOM  ${serialText} ${atomText} ${resText} ${chain}${seqText}    ${xx}${yy}${zz}  1.00${bf}           ${elText}`;
   }
 
   function buildPdb() {
     const t0 = performance.now();
     const lines = [];
     let serial = 1;
-    let globalResSeq = 1;
 
     // Compute global COM for centering (in nm)
     let sumX = 0, sumY = 0, sumZ = 0, totalBeads = 0;
@@ -1318,27 +1358,27 @@
     const cz = totalBeads > 0 ? sumZ / totalBeads : 0;
 
     for (const frag of state.fragments) {
-      const startRes = globalResSeq;
+      const nResMax1 = Math.max(1, frag.nRes - 1);
       for (const bead of frag.beads) {
-        const resSeq = startRes + bead.resIdx;
+        const resSeq = bead.resIdx + 1;  // per-chain, 1-based
         const atomName = BEAD_TO_ATOM[bead.name] || "CA";
         const element = BEAD_TO_ELEMENT[bead.name] || "C";
         const resName = frag.resTypes[bead.resIdx];
+        // B-factor encodes gradient position (0 = N-term, 99 = C-term)
+        const bfactor = (bead.resIdx / nResMax1) * 99;
         // Convert nm → Å for PDB
         lines.push(atomLine(
           serial, atomName, resName, frag.chain, resSeq,
           (bead.pos[0] - cx) * 10,
           (bead.pos[1] - cy) * 10,
           (bead.pos[2] - cz) * 10,
-          element
+          element, bfactor
         ));
         serial++;
       }
       const lastResName = frag.resTypes[frag.nRes - 1];
-      const endResSeq = startRes + frag.nRes - 1;
-      lines.push(`TER   ${String(serial).padStart(5, " ")}      ${lastResName} ${frag.chain}${String(endResSeq).padStart(4, " ")}`);
+      lines.push(`TER   ${String(serial).padStart(5, " ")}      ${lastResName} ${frag.chain}${String(frag.nRes).padStart(4, " ")}`);
       serial++;
-      globalResSeq += frag.nRes;
     }
 
     lines.push("END");
