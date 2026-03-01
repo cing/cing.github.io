@@ -1357,8 +1357,12 @@
     const cy = totalBeads > 0 ? sumY / totalBeads : 0;
     const cz = totalBeads > 0 ? sumZ / totalBeads : 0;
 
+    // Track BB atom serial numbers per chain for CONECT records
+    const bbSerials = [];
+
     for (const frag of state.fragments) {
       const nResMax1 = Math.max(1, frag.nRes - 1);
+      const chainBBSerials = [];
       for (const bead of frag.beads) {
         const resSeq = bead.resIdx + 1;  // per-chain, 1-based
         const atomName = BEAD_TO_ATOM[bead.name] || "CA";
@@ -1366,6 +1370,7 @@
         const resName = frag.resTypes[bead.resIdx];
         // B-factor encodes gradient position (0 = N-term, 99 = C-term)
         const bfactor = (bead.resIdx / nResMax1) * 99;
+        if (bead.isBB) chainBBSerials.push(serial);
         // Convert nm → Å for PDB
         lines.push(atomLine(
           serial, atomName, resName, frag.chain, resSeq,
@@ -1376,9 +1381,19 @@
         ));
         serial++;
       }
+      bbSerials.push(chainBBSerials);
       const lastResName = frag.resTypes[frag.nRes - 1];
       lines.push(`TER   ${String(serial).padStart(5, " ")}      ${lastResName} ${frag.chain}${String(frag.nRes).padStart(4, " ")}`);
       serial++;
+    }
+
+    // CONECT records for backbone connectivity (BB-BB bonds)
+    for (const chainBB of bbSerials) {
+      for (let i = 0; i < chainBB.length - 1; i++) {
+        const s1 = String(chainBB[i]).padStart(5, " ");
+        const s2 = String(chainBB[i + 1]).padStart(5, " ");
+        lines.push(`CONECT${s1}${s2}`);
+      }
     }
 
     lines.push("END");
@@ -1407,9 +1422,17 @@
     if (components.length) {
       await plugin.managers.structure.component.removeRepresentations(components);
       for (const comp of components) {
+        // Spacefill spheres with per-chain gradient coloring
         await plugin.builders.structure.representation.addRepresentation(comp.cell, {
           type: "spacefill",
           color: "fixed-chain"
+        });
+        // White backbone cylinders via CONECT bonds
+        await plugin.builders.structure.representation.addRepresentation(comp.cell, {
+          type: "ball-and-stick",
+          color: "uniform",
+          colorParams: { value: 0xffffff },
+          typeParams: { sizeFactor: 0.24, sizeAspectRatio: 1 }
         });
       }
     }
