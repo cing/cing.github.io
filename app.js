@@ -10,11 +10,6 @@
     0x2980b9, 0xc0392b, 0x27ae60, 0xf39c12,
     0x8e44ad, 0x16a085, 0xd35400, 0xbdc3c7
   ];
-  const SIDECHAIN_SOFT2 = 3.1 * 3.1;
-  const SIDECHAIN_HARD2 = 2.35 * 2.35;
-  const SIDECHAIN_HARD_WEIGHT = 3.2;
-  const SIDECHAIN_CA_WEIGHT = 0.25;
-  const CHI_CANDIDATES_RAD = [0, 60, -60, 120, -120, 180].map(function (deg) { return deg * DEG; });
 
   function registerFixedChainTheme(plugin) {
     const provider = {
@@ -62,105 +57,343 @@
     }
   }
 
+  // ─── MARTINI 2.2 Configuration ───────────────────────────────────
+
   const SIM = {
-    fragmentCount: 8,
-    minResidues: 18,
-    maxResidues: 30,
+    fragmentCount: 6,
+    minResidues: 15,
+    maxResidues: 25,
     frameMs: 24,
-    substepsPerFrame: 1,
+    substepsPerFrame: 4,
     renderIntervalMs: 40,
     minRenderIntervalMs: 20,
     maxRenderIntervalMs: 100,
-    renderAtomMode: "full",
-    fullAtomRenderEvery: 8,
-    totalCycles: 4000,
-    initialSpread: 52,
-    finalSpread: 14,
-    bondLength: 3.8,
-    bondK: 64,
-    secK2: 7.2,
-    secK3: 5.8,
-    secK4_helix: 3.8,
-    secK4_other: 1.6,
-    angleK: 20,
-    centerK: 0.014,
-    boxHalf: 45,
-    wallK: 12,
-    wallShell: 4,
-    repEpsIntra: 1.8,
-    repEpsInter: 4.1,
-    repSigmaScaleIntra: 1.05,
-    repSigmaScaleInter: 1.2,
-    stericMinScale: 0.98,
-    attrSigma: 7.6,
-    attrEpsStart: 0.05,
-    attrEpsEnd: 0.45,
-    attrCut: 14.5,
-    nonbondStrideIntra: 2,
-    nonbondStrideInter: 1,
-    neighborListEnabled: true,
-    neighborCellSize: 18,
-    clashDistance: 3.0,
-    dt: 0.02,
-    gamma: 0.75,
-    tempStart: 8.2,
-    tempEnd: 3.2,
-    maxForce: 85,
-    compactK: 0.04,
-    compactHydroMin: 0.3,
-    maxSpeed: 12,
-    maxStep: 0.45,
-    bondConstraintIters: 6
+    totalCycles: 6000,
+    initialSpread: 6.0,    // nm
+    dt: 0.005,             // ps
+    gamma: 1.0,            // /ps
+    kB: 0.00831446,        // kJ/(mol·K)
+    tempStart: 400,        // K
+    tempEnd: 300,           // K
+    boxHalf: 8.0,          // nm
+    wallK: 500,
+    wallShell: 1.0,        // nm
+    ljCutoff: 1.2,         // nm
+    dielectric: 15,
+    neighborCellSize: 1.3, // nm
+    bondConstraintIters: 8,
+    maxForce: 5000,        // kJ/(mol·nm)
+    maxSpeed: 5.0,         // nm/ps
+    maxStep: 0.02          // nm
   };
 
-  // Hills-Brooks calibrated secondary structure targets.
-  // Angle equilibria from PDB statistics: helix ~91°, beta ~120°, coil ~105°.
-  // Dihedral terms use the multi-cosine form from Hills & Brooks (2009):
-  //   V = sum_n  K_n * [1 + cos(n*phi + delta_n)]
-  // represented as arrays of {n, K, delta} objects.
-  const SECONDARY_TARGETS = {
-    helix: {
-      d2: 5.45, d3: 5.2, d4: 6.15,
-      angleTheta0: 91 * DEG,
-      dihTerms: [
-        { n: 2, K: 1.2, delta: 0.17 },
-        { n: 3, K: 1.2, delta: 0.17 },
-        { n: 4, K: 1.2, delta: 0.17 }
+  // ─── MARTINI bead types and sigmas ───────────────────────────────
+
+  // Regular beads: sigma = 0.47 nm, Small (S-prefix) beads: sigma = 0.43 nm
+  // Level IX uses sigma = 0.62 nm (cross-size interaction)
+  const BEAD_TYPES = [
+    "P5","P4","P3","P2","P1",
+    "Nda","Nd","Na","N0",
+    "C5","C4","C3","C2","C1",
+    "Qda","Qd","Qa","Q0",
+    "SP5","SP4","SP3","SP2","SP1",
+    "SNda","SNd","SNa","SN0",
+    "SC5","SC4","SC3","SC2","SC1",
+    "SQda","SQd","SQa","SQ0"
+  ];
+  const BEAD_TYPE_INDEX = {};
+  for (let i = 0; i < BEAD_TYPES.length; i++) BEAD_TYPE_INDEX[BEAD_TYPES[i]] = i;
+
+  function beadSigma(type) {
+    return type.charAt(0) === "S" ? 0.43 : 0.47;
+  }
+
+  // ─── MARTINI interaction matrix (Marrink 2007 Table 2) ──────────
+  // Epsilon levels in kJ/mol (× 0.88 for Dry MARTINI)
+  const DRY_SCALE = 0.88;
+  const EPS_LEVELS = {
+    O:   5.6  * DRY_SCALE,
+    I:   5.0  * DRY_SCALE,
+    II:  4.5  * DRY_SCALE,
+    III: 4.0  * DRY_SCALE,
+    IV:  3.5  * DRY_SCALE,
+    V:   3.1  * DRY_SCALE,
+    VI:  2.7  * DRY_SCALE,
+    VII: 2.3  * DRY_SCALE,
+    VIII:2.0  * DRY_SCALE,
+    IX:  2.0  * DRY_SCALE
+  };
+
+  // Reduced 9-category interaction mapping: P, Nda, Nd, Na, N0, C, Qda, Qd, Qa, Q0
+  // Index: 0=P, 1=Nda, 2=Nd, 3=Na, 4=N0, 5=C, 6=Qda, 7=Qd, 8=Qa, 9=Q0
+  // From Marrink 2007 Table 2 (simplified — P types averaged, C types averaged)
+  const INTERACTION_LEVELS = [
+    //  P     Nda   Nd    Na    N0    C     Qda   Qd    Qa    Q0
+    [ "O",   "IV", "IV", "IV", "III","IV", "I",  "I",  "I",  "I"  ],  // P
+    [ "IV",  "III","IV", "IV", "III","IV", "III", "III","III","IV" ],  // Nda
+    [ "IV",  "IV", "III","IV", "III","IV", "II",  "II", "IV", "IV" ],  // Nd
+    [ "IV",  "IV", "IV", "III","III","IV", "II",  "IV", "II", "IV" ],  // Na
+    [ "III", "III","III","III","II", "III","IV",  "IV", "IV", "IV" ],  // N0
+    [ "IV",  "IV", "IV", "IV", "III","II", "IV",  "IV", "IV", "IV" ],  // C
+    [ "I",   "III","II", "II", "IV", "IV", "O",   "I",  "I",  "I"  ],  // Qda
+    [ "I",   "III","II", "IV", "IV", "IV", "I",   "O",  "V",  "I"  ],  // Qd
+    [ "I",   "III","IV", "II", "IV", "IV", "I",   "V",  "O",  "I"  ],  // Qa
+    [ "I",   "IV", "IV", "IV", "IV", "IV", "I",   "I",  "I",  "O"  ]   // Q0
+  ];
+
+  function beadCategory(type) {
+    const base = type.replace(/^S/, "");
+    if (base.charAt(0) === "P") return 0;
+    if (base === "Nda") return 1;
+    if (base === "Nd") return 2;
+    if (base === "Na") return 3;
+    if (base === "N0") return 4;
+    if (base.charAt(0) === "C") return 5;
+    if (base === "Qda") return 6;
+    if (base === "Qd") return 7;
+    if (base === "Qa") return 8;
+    if (base === "Q0") return 9;
+    return 4; // default N0
+  }
+
+  function pairEpsilon(typeA, typeB) {
+    const catA = beadCategory(typeA);
+    const catB = beadCategory(typeB);
+    const level = INTERACTION_LEVELS[catA][catB];
+    return EPS_LEVELS[level];
+  }
+
+  function pairSigma(typeA, typeB) {
+    return 0.5 * (beadSigma(typeA) + beadSigma(typeB));
+  }
+
+  // Charges for charged bead types
+  function beadCharge(type) {
+    const base = type.replace(/^S/, "");
+    if (base === "Qd" || base === "Qda") return 1.0;
+    if (base === "Qa") return -1.0;
+    return 0;
+  }
+
+  // ─── MARTINI residue definitions ─────────────────────────────────
+  // BB type is null — resolved at runtime from secondary structure
+  // Bond K in kJ/(mol·nm²), angle K in kJ/mol, dihedral K in kJ/mol
+
+  const MARTINI_RESIDUES = {
+    GLY: {
+      beads: [{ name: "BB", type: null }],
+      bonds: [], angles: []
+    },
+    ALA: {
+      beads: [{ name: "BB", type: null }],
+      bonds: [], angles: []
+    },
+    VAL: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C2" }],
+      bonds: [{ a: 0, b: 1, r0: 0.265, K: 7500 }],
+      angles: []
+    },
+    LEU: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C1" }],
+      bonds: [{ a: 0, b: 1, r0: 0.265, K: 7500 }],
+      angles: []
+    },
+    ILE: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C1" }],
+      bonds: [{ a: 0, b: 1, r0: 0.265, K: 7500 }],
+      angles: []
+    },
+    PRO: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C2" }],
+      bonds: [{ a: 0, b: 1, r0: 0.265, K: 7500 }],
+      angles: []
+    },
+    PHE: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "SC5" },
+        { name: "SC2", type: "SC5" },
+        { name: "SC3", type: "SC5" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.325, K: 7500 },
+        { a: 1, b: 2, r0: 0.270, K: 7500, constraint: true },
+        { a: 1, b: 3, r0: 0.270, K: 7500, constraint: true },
+        { a: 2, b: 3, r0: 0.270, K: 7500, constraint: true }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 150 * DEG, K: 50 },
+        { a: 0, b: 1, c: 3, theta0: 150 * DEG, K: 50 }
       ]
     },
-    beta: {
-      d2: 6.4, d3: 9.0, d4: 11.8,
-      angleTheta0: 120 * DEG,
-      dihTerms: [
-        { n: 1, K: 0.45, delta: -0.35 },
-        { n: 3, K: 0.6, delta: -0.35 }
+    TYR: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "SC4" },
+        { name: "SC2", type: "SC4" },
+        { name: "SC3", type: "SP1" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.325, K: 5000 },
+        { a: 1, b: 2, r0: 0.270, K: 7500, constraint: true },
+        { a: 1, b: 3, r0: 0.270, K: 7500, constraint: true },
+        { a: 2, b: 3, r0: 0.270, K: 7500, constraint: true }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 150 * DEG, K: 50 },
+        { a: 0, b: 1, c: 3, theta0: 150 * DEG, K: 50 }
       ]
     },
-    coil: {
-      d2: 6.2, d3: 8.3, d4: 10.5,
-      angleTheta0: 105 * DEG,
-      dihTerms: [
-        { n: 1, K: 0.2, delta: 0 },
-        { n: 2, K: 0.2, delta: 0 },
-        { n: 3, K: 0.2, delta: 0 },
-        { n: 4, K: 0.2, delta: 0 }
+    TRP: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "SC4" },
+        { name: "SC2", type: "SNd" },
+        { name: "SC3", type: "SC5" },
+        { name: "SC4", type: "SC5" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.300, K: 5000 },
+        { a: 1, b: 2, r0: 0.270, K: 7500, constraint: true },
+        { a: 2, b: 3, r0: 0.270, K: 7500, constraint: true },
+        { a: 3, b: 4, r0: 0.270, K: 7500, constraint: true },
+        { a: 1, b: 3, r0: 0.270, K: 7500, constraint: true },
+        { a: 2, b: 4, r0: 0.270, K: 7500, constraint: true }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 210 * DEG, K: 50 },
+        { a: 0, b: 1, c: 3, theta0: 90 * DEG, K: 50 }
+      ]
+    },
+    SER: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "P1" }],
+      bonds: [{ a: 0, b: 1, r0: 0.250, K: 7500 }],
+      angles: []
+    },
+    THR: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "P1" }],
+      bonds: [{ a: 0, b: 1, r0: 0.260, K: 7500 }],
+      angles: []
+    },
+    CYS: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C5" }],
+      bonds: [{ a: 0, b: 1, r0: 0.240, K: 7500 }],
+      angles: []
+    },
+    MET: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "C5" }],
+      bonds: [{ a: 0, b: 1, r0: 0.310, K: 2800 }],
+      angles: []
+    },
+    ASP: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "Qa" }],
+      bonds: [{ a: 0, b: 1, r0: 0.280, K: 7500 }],
+      angles: []
+    },
+    GLU: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "Qa" }],
+      bonds: [{ a: 0, b: 1, r0: 0.310, K: 7500 }],
+      angles: []
+    },
+    ASN: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "P5" }],
+      bonds: [{ a: 0, b: 1, r0: 0.280, K: 5000 }],
+      angles: []
+    },
+    GLN: {
+      beads: [{ name: "BB", type: null }, { name: "SC1", type: "P4" }],
+      bonds: [{ a: 0, b: 1, r0: 0.310, K: 5000 }],
+      angles: []
+    },
+    LYS: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "C3" },
+        { name: "SC2", type: "Qd" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.250, K: 7500 },
+        { a: 1, b: 2, r0: 0.300, K: 7500 }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 150 * DEG, K: 20 }
+      ]
+    },
+    ARG: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "N0" },
+        { name: "SC2", type: "Qd" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.250, K: 7500 },
+        { a: 1, b: 2, r0: 0.350, K: 6200 }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 150 * DEG, K: 15 }
+      ]
+    },
+    HIS: {
+      beads: [
+        { name: "BB", type: null },
+        { name: "SC1", type: "SC4" },
+        { name: "SC2", type: "SP1" },
+        { name: "SC3", type: "SP1" }
+      ],
+      bonds: [
+        { a: 0, b: 1, r0: 0.325, K: 7500 },
+        { a: 1, b: 2, r0: 0.270, K: 7500, constraint: true },
+        { a: 1, b: 3, r0: 0.270, K: 7500, constraint: true },
+        { a: 2, b: 3, r0: 0.270, K: 7500, constraint: true }
+      ],
+      angles: [
+        { a: 0, b: 1, c: 2, theta0: 150 * DEG, K: 50 },
+        { a: 0, b: 1, c: 3, theta0: 150 * DEG, K: 50 }
       ]
     }
   };
 
-  const RESIDUE_LIBRARY = [
-    { code: "G", name: "GLY", size: 3.2, hydro: 0.36, charge: 0 },
-    { code: "A", name: "ALA", size: 3.35, hydro: 0.62, charge: 0 },
-    { code: "V", name: "VAL", size: 3.65, hydro: 0.86, charge: 0 },
-    { code: "L", name: "LEU", size: 3.75, hydro: 0.9, charge: 0 },
-    { code: "I", name: "ILE", size: 3.75, hydro: 0.92, charge: 0 },
-    { code: "S", name: "SER", size: 3.35, hydro: 0.28, charge: 0 },
-    { code: "T", name: "THR", size: 3.45, hydro: 0.34, charge: 0 },
-    { code: "D", name: "ASP", size: 3.5, hydro: 0.12, charge: -1 },
-    { code: "E", name: "GLU", size: 3.6, hydro: 0.14, charge: -1 },
-    { code: "K", name: "LYS", size: 3.7, hydro: 0.2, charge: 1 },
-    { code: "R", name: "ARG", size: 3.8, hydro: 0.18, charge: 1 }
-  ];
+  const ALL_AA = Object.keys(MARTINI_RESIDUES);
+  // Weighted AA sampling (roughly reflects natural abundance)
+  const AA_WEIGHTS = {
+    ALA: 8, ARG: 5, ASN: 4, ASP: 5, CYS: 2, GLN: 4, GLU: 7,
+    GLY: 7, HIS: 2, ILE: 5, LEU: 9, LYS: 6, MET: 2, PHE: 4,
+    PRO: 5, SER: 7, THR: 5, TRP: 1, TYR: 3, VAL: 7
+  };
+  const AA_CUMULATIVE = [];
+  (function () {
+    let sum = 0;
+    for (const aa of ALL_AA) {
+      sum += (AA_WEIGHTS[aa] || 3);
+      AA_CUMULATIVE.push({ aa, cum: sum });
+    }
+    for (const entry of AA_CUMULATIVE) entry.cum /= sum;
+  })();
+
+  // ─── SS-dependent backbone bonded parameters (MARTINI 2.2) ──────
+  // BB type by SS: helix = N0, beta = Nda, coil = P5
+  const BB_PARAMS = {
+    helix: {
+      bbType: "N0",
+      bond: { r0: 0.310, K: 0, constraint: true },  // constraint
+      angle: { theta0: 96 * DEG, K: 700 },
+      dihedral: { n: 1, phi0: -120 * DEG, K: 400 }
+    },
+    beta: {
+      bbType: "Nda",
+      bond: { r0: 0.350, K: 1250 },
+      angle: { theta0: 134 * DEG, K: 25 },
+      dihedral: { n: 1, phi0: 120 * DEG, K: 10 }
+    },
+    coil: {
+      bbType: "P5",
+      bond: { r0: 0.350, K: 1250 },
+      angle: { theta0: 127 * DEG, K: 25 },
+      dihedral: null
+    }
+  };
+
+  // ─── DOM + State ─────────────────────────────────────────────────
 
   const el = {
     status: document.getElementById("status"),
@@ -195,9 +428,6 @@
     cps: 0,
     cpsWindowStartMs: 0,
     cpsWindowStartCycle: 0,
-    pairWindowStartMs: 0,
-    pairWindowCount: 0,
-    pairChecksPerSec: 0,
     rng: Math.random,
     perf: {
       computeMs: 0,
@@ -206,17 +436,18 @@
       renderFps: 0
     },
     lastMetrics: {
+      totalBeads: 0,
       clashes: 0,
       contacts: 0,
-      totalPairs: 1,
-      clashRate: 0,
-      meanEndToEndNorm: 0
+      totalPairs: 1
     }
   };
 
   function setStatus(message) {
     if (el.status) el.status.textContent = message;
   }
+
+  // ─── RNG + Math Utilities ────────────────────────────────────────
 
   function createRng(seed) {
     let t = seed >>> 0;
@@ -260,22 +491,6 @@
   function ewma(prev, sample, alpha) {
     if (prev <= 1e-9) return sample;
     return prev + alpha * (sample - prev);
-  }
-
-  function updatePairRate(pairChecks) {
-    const now = performance.now();
-    if (state.pairWindowStartMs <= 0) {
-      state.pairWindowStartMs = now;
-      state.pairWindowCount = pairChecks;
-      return;
-    }
-    state.pairWindowCount += pairChecks;
-    const dtMs = now - state.pairWindowStartMs;
-    if (dtMs < 500) return;
-    const rate = state.pairWindowCount / (dtMs / 1000);
-    state.pairChecksPerSec = ewma(state.pairChecksPerSec, rate, 0.35);
-    state.pairWindowStartMs = now;
-    state.pairWindowCount = 0;
   }
 
   function gauss() {
@@ -336,42 +551,12 @@
     return [r * Math.cos(t), r * Math.sin(t), z];
   }
 
-  function randomFrame() {
-    const x = randomUnitVec();
-    let y = randomUnitVec();
-    y = normalize(sub(y, scale(x, dot(y, x))));
-    if (norm(y) < 1e-10) y = normalize(cross(x, [0, 1, 0]));
-    const z = normalize(cross(x, y));
-    return { x, y, z };
-  }
-
-  function placeFromThreePoints(a, b, c, length, angleRad, dihedralRad) {
-    const bc = normalize(sub(c, b));
-    const ba = normalize(sub(a, b));
-    let n = normalize(cross(ba, bc));
-    if (norm(n) < 1e-10) n = [0, 0, 1];
-    const m = cross(n, bc);
-
-    const t1 = scale(bc, -Math.cos(angleRad) * length);
-    const t2 = scale(m, Math.sin(angleRad) * Math.cos(dihedralRad) * length);
-    const t3 = scale(n, Math.sin(angleRad) * Math.sin(dihedralRad) * length);
-    return add(c, add(t1, add(t2, t3)));
-  }
-
   function progress() {
     return clamp(state.cycle / SIM.totalCycles, 0, 1);
   }
 
   function currentTemp(p) {
     return lerp(SIM.tempStart, SIM.tempEnd, smoothstep(p));
-  }
-
-  function currentAttraction(p) {
-    return lerp(SIM.attrEpsStart, SIM.attrEpsEnd, smoothstep(p));
-  }
-
-  function targetRadius(p) {
-    return lerp(SIM.initialSpread, SIM.finalSpread, smoothstep(p));
   }
 
   function updateCycleRate() {
@@ -381,10 +566,8 @@
       state.cpsWindowStartCycle = state.cycle;
       return;
     }
-
     const dtMs = now - state.cpsWindowStartMs;
     if (dtMs < 500) return;
-
     const dCycle = state.cycle - state.cpsWindowStartCycle;
     const raw = dCycle / (dtMs / 1000);
     state.cps = state.cps <= 1e-6 ? raw : lerp(state.cps, raw, 0.35);
@@ -392,163 +575,204 @@
     state.cpsWindowStartCycle = state.cycle;
   }
 
-  function seedSecondaryTypes(fragment, p) {
-    for (let i = 0; i < fragment.length; i++) fragment.ss[i] = "coil";
+  function capVectorInPlace(vec, maxNorm) {
+    const m2 = vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2];
+    if (m2 <= maxNorm * maxNorm) return;
+    const inv = maxNorm / Math.sqrt(m2);
+    vec[0] *= inv;
+    vec[1] *= inv;
+    vec[2] *= inv;
+  }
 
-    const motifs = randInt(2, Math.max(3, Math.floor(fragment.length / 4)));
-    const helixChance = 0.72 + 0.18 * p;
-    const betaChance = 0.12 * (1 - 0.4 * p);
+  // ─── Fragment Construction ───────────────────────────────────────
+
+  function pickRandomAA() {
+    const r = random();
+    for (const entry of AA_CUMULATIVE) {
+      if (r <= entry.cum) return entry.aa;
+    }
+    return AA_CUMULATIVE[AA_CUMULATIVE.length - 1].aa;
+  }
+
+  function seedSecondaryTypes(nRes) {
+    const ss = new Array(nRes);
+    for (let i = 0; i < nRes; i++) ss[i] = "coil";
+
+    const motifs = randInt(2, Math.max(3, Math.floor(nRes / 4)));
+    const helixChance = 0.65;
+    const betaChance = 0.20;
     for (let m = 0; m < motifs; m++) {
       const toss = random();
       const type = toss < helixChance ? "helix" : toss < helixChance + betaChance ? "beta" : "coil";
       const span = type === "helix" ? randInt(4, 8) : type === "beta" ? randInt(3, 5) : randInt(2, 4);
-      const start = randInt(0, Math.max(0, fragment.length - span));
-      for (let i = start; i < start + span; i++) fragment.ss[i] = type;
+      const start = randInt(0, Math.max(0, nRes - span));
+      for (let i = start; i < Math.min(nRes, start + span); i++) ss[i] = type;
     }
+    return ss;
   }
 
-  function initialDihedralForSs(ssType) {
-    if (ssType === "helix") return rand(46, 54) * DEG;
-    if (ssType === "beta") return (random() < 0.5 ? -1 : 1) * rand(150, 168) * DEG;
-    return rand(-115, 115) * DEG;
+  function resolveBBType(ss) {
+    return BB_PARAMS[ss].bbType;
   }
 
-  function enforceChainBondLengths(ca, bond, iterations) {
-    for (let it = 0; it < iterations; it++) {
-      for (let i = 0; i < ca.length - 1; i++) {
-        const p0 = ca[i];
-        const p1 = ca[i + 1];
-        const dx = p1[0] - p0[0];
-        const dy = p1[1] - p0[1];
-        const dz = p1[2] - p0[2];
-        const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
-        if (r < 1e-8) continue;
-        const corr = 0.5 * (r - bond) / r;
-        const cx = corr * dx;
-        const cy = corr * dy;
-        const cz = corr * dz;
-        p0[0] += cx; p0[1] += cy; p0[2] += cz;
-        p1[0] -= cx; p1[1] -= cy; p1[2] -= cz;
-      }
-    }
-  }
+  function makeFragment(id, existingCenters) {
+    const nRes = randInt(SIM.minResidues, SIM.maxResidues);
+    const chain = CHAIN_IDS[id % CHAIN_IDS.length];
 
-  function compactifyInitialChain(ca, center, targetRadius) {
-    const minDist = 2.95;
-    const minDist2 = minDist * minDist;
-    for (let it = 0; it < 4; it++) {
-      let cmx = 0, cmy = 0, cmz = 0;
-      for (let i = 0; i < ca.length; i++) {
-        cmx += ca[i][0];
-        cmy += ca[i][1];
-        cmz += ca[i][2];
-      }
-      const inv = 1 / ca.length;
-      cmx *= inv; cmy *= inv; cmz *= inv;
+    // Pick residue types
+    const resTypes = new Array(nRes);
+    for (let i = 0; i < nRes; i++) resTypes[i] = pickRandomAA();
 
-      for (let i = 0; i < ca.length; i++) {
-        const p = ca[i];
-        const toCenterX = center[0] - p[0];
-        const toCenterY = center[1] - p[1];
-        const toCenterZ = center[2] - p[2];
-        const toCmX = cmx - p[0];
-        const toCmY = cmy - p[1];
-        const toCmZ = cmz - p[2];
-        p[0] += 0.025 * toCenterX + 0.012 * toCmX + rand(-0.14, 0.14);
-        p[1] += 0.025 * toCenterY + 0.012 * toCmY + rand(-0.14, 0.14);
-        p[2] += 0.025 * toCenterZ + 0.012 * toCmZ + rand(-0.14, 0.14);
+    // Assign secondary structure
+    const ss = seedSecondaryTypes(nRes);
 
-        const rx = p[0] - center[0];
-        const ry = p[1] - center[1];
-        const rz = p[2] - center[2];
-        const r = Math.sqrt(rx * rx + ry * ry + rz * rz);
-        if (r > targetRadius && r > 1e-8) {
-          const s = targetRadius / r;
-          p[0] = center[0] + rx * s;
-          p[1] = center[1] + ry * s;
-          p[2] = center[2] + rz * s;
-        }
-      }
+    // Place fragment center
+    const center = sampleCenter(existingCenters, SIM.initialSpread);
 
-      for (let i = 0; i < ca.length; i++) {
-        for (let j = i + 3; j < ca.length; j++) {
-          const dx = ca[j][0] - ca[i][0];
-          const dy = ca[j][1] - ca[i][1];
-          const dz = ca[j][2] - ca[i][2];
-          const d2 = dx * dx + dy * dy + dz * dz;
-          if (d2 >= minDist2 || d2 < 1e-12) continue;
-          const d = Math.sqrt(d2);
-          const push = 0.5 * (minDist - d) / d;
-          const px = push * dx;
-          const py = push * dy;
-          const pz = push * dz;
-          ca[i][0] -= px; ca[i][1] -= py; ca[i][2] -= pz;
-          ca[j][0] += px; ca[j][1] += py; ca[j][2] += pz;
-        }
-      }
+    // Build beads
+    const beads = [];
+    const bbIdx = new Array(nRes);
+    const bonds = [];
+    const angles = [];
+    const dihedrals = [];
+    const exclusionSet = new Set();
 
-      enforceChainBondLengths(ca, SIM.bondLength, 2);
-    }
-  }
-
-  function buildInitialCaChain(length, center, ss) {
-    const ca = new Array(length);
-    const frame = randomFrame();
-    const bond = SIM.bondLength;
-    const theta = SECONDARY_TARGETS.coil.angleTheta0;
-    const seedRadius = Math.max(13.0, Math.min(20.0, 0.34 * length * bond));
-
-    ca[0] = add(center, scale(frame.x, rand(-1.2, 1.2)));
-    if (length === 1) return ca;
-
-    ca[1] = add(ca[0], scale(normalize(add(frame.x, scale(frame.y, rand(-0.25, 0.25)))), bond));
-    if (length === 2) return ca;
-
-    const dir2 = normalize(add(scale(frame.x, -Math.cos(theta)), scale(frame.y, Math.sin(theta) * rand(0.8, 1.2))));
-    ca[2] = add(ca[1], scale(dir2, bond));
-
-    const localSteric2 = Math.pow(Math.max(2.8, SIM.bondLength * 0.8), 2);
-    for (let i = 3; i < length; i++) {
-      const mode = ss[i - 1];
-      let placed = null;
-      for (let attempt = 0; attempt < 24; attempt++) {
-        const tau = initialDihedralForSs(mode) + rand(-24, 24) * DEG;
-        const candidate = placeFromThreePoints(ca[i - 3], ca[i - 2], ca[i - 1], bond, theta, tau);
-        let ok = true;
-        for (let j = 0; j < i - 2; j++) {
-          if (distanceSq(candidate, ca[j]) < localSteric2) {
-            ok = false;
-            break;
-          }
-        }
-        if (!ok) continue;
-        const radial = norm(sub(candidate, center));
-        if (radial > seedRadius) continue;
-        placed = candidate;
-        break;
-      }
-      if (!placed) {
-        const last = ca[i - 1];
-        const dir = normalize(add(randomUnitVec(), scale(normalize(sub(center, last)), 1.2)));
-        placed = add(last, scale(dir, bond));
-        const radial = norm(sub(placed, center));
-        if (radial > seedRadius) {
-          const inward = normalize(sub(center, last));
-          placed = add(last, scale(inward, bond));
-        }
-      }
-      ca[i] = placed;
+    function addExclusion(i, j) {
+      const lo = Math.min(i, j);
+      const hi = Math.max(i, j);
+      exclusionSet.add(lo * 10000 + hi);
     }
 
-    compactifyInitialChain(ca, center, seedRadius);
-    return ca;
+    // Place backbone beads along a chain
+    for (let r = 0; r < nRes; r++) {
+      const bbType = resolveBBType(ss[r]);
+      const bbBead = {
+        pos: [0, 0, 0], vel: [0, 0, 0], force: [0, 0, 0],
+        type: bbType, name: "BB", resIdx: r, isBB: true
+      };
+      bbIdx[r] = beads.length;
+      beads.push(bbBead);
+
+      // Place sidechain beads
+      const resDef = MARTINI_RESIDUES[resTypes[r]];
+      const scOffset = beads.length - 1; // BB index
+      for (let b = 1; b < resDef.beads.length; b++) {
+        const def = resDef.beads[b];
+        beads.push({
+          pos: [0, 0, 0], vel: [0, 0, 0], force: [0, 0, 0],
+          type: def.type, name: def.name, resIdx: r, isBB: false
+        });
+      }
+
+      // Add intra-residue bonds (SC bonds)
+      const resBeadStart = bbIdx[r];
+      for (const bondDef of resDef.bonds) {
+        const bi = resBeadStart + bondDef.a;
+        const bj = resBeadStart + bondDef.b;
+        bonds.push({
+          i: bi, j: bj,
+          r0: bondDef.r0, K: bondDef.K,
+          isConstraint: !!bondDef.constraint
+        });
+        addExclusion(bi, bj);
+      }
+
+      // Add intra-residue angles
+      for (const angDef of resDef.angles) {
+        angles.push({
+          i: resBeadStart + angDef.a,
+          j: resBeadStart + angDef.b,
+          k: resBeadStart + angDef.c,
+          theta0: angDef.theta0, K: angDef.K
+        });
+        // Add 1-3 exclusions for angle terms
+        addExclusion(resBeadStart + angDef.a, resBeadStart + angDef.c);
+      }
+    }
+
+    // Add backbone bonds, angles, dihedrals
+    for (let r = 0; r < nRes - 1; r++) {
+      const bbI = bbIdx[r];
+      const bbJ = bbIdx[r + 1];
+      // Use SS of first residue for bond params
+      const ssType = ss[r];
+      const bbp = BB_PARAMS[ssType];
+      bonds.push({
+        i: bbI, j: bbJ,
+        r0: bbp.bond.r0, K: bbp.bond.K,
+        isConstraint: !!bbp.bond.constraint
+      });
+      addExclusion(bbI, bbJ);
+    }
+
+    for (let r = 0; r < nRes - 2; r++) {
+      const bbI = bbIdx[r];
+      const bbJ = bbIdx[r + 1];
+      const bbK = bbIdx[r + 2];
+      const ssType = ss[r + 1];
+      const bbp = BB_PARAMS[ssType];
+      angles.push({
+        i: bbI, j: bbJ, k: bbK,
+        theta0: bbp.angle.theta0, K: bbp.angle.K
+      });
+      addExclusion(bbI, bbK);
+    }
+
+    for (let r = 0; r < nRes - 3; r++) {
+      const ssType = ss[r + 1];
+      const bbp = BB_PARAMS[ssType];
+      if (!bbp.dihedral) continue;
+      dihedrals.push({
+        i: bbIdx[r], j: bbIdx[r + 1], k: bbIdx[r + 2], l: bbIdx[r + 3],
+        n: bbp.dihedral.n, phi0: bbp.dihedral.phi0, K: bbp.dihedral.K
+      });
+      // 1-4 exclusion
+      addExclusion(bbIdx[r], bbIdx[r + 3]);
+    }
+
+    // Also exclude BB-SC within same and adjacent residues
+    for (let r = 0; r < nRes; r++) {
+      const resDef = MARTINI_RESIDUES[resTypes[r]];
+      const resStart = bbIdx[r];
+      // Exclude all beads within same residue from each other
+      for (let a = 0; a < resDef.beads.length; a++) {
+        for (let b = a + 1; b < resDef.beads.length; b++) {
+          addExclusion(resStart + a, resStart + b);
+        }
+      }
+      // Exclude SC beads with adjacent residue BBs
+      if (r > 0) {
+        for (let b = 1; b < resDef.beads.length; b++) {
+          addExclusion(resStart + b, bbIdx[r - 1]);
+        }
+      }
+      if (r < nRes - 1) {
+        for (let b = 1; b < resDef.beads.length; b++) {
+          addExclusion(resStart + b, bbIdx[r + 1]);
+        }
+      }
+    }
+
+    // Now position all beads
+    // Place backbone as a worm-like chain
+    placeBackbone(beads, bbIdx, nRes, ss, center);
+    // Place sidechains
+    placeSidechains(beads, bbIdx, nRes, resTypes);
+
+    return {
+      id, chain, nRes,
+      resTypes, ss,
+      beads, bbIdx,
+      bonds, angles, dihedrals,
+      exclusions: exclusionSet
+    };
   }
 
   function sampleCenter(existing, spread) {
-    const minSep2 = 17 * 17;
-    let candidate = scale(randomUnitVec(), rand(spread * 0.55, spread));
+    const minSep2 = 3.0 * 3.0; // nm
+    let candidate = scale(randomUnitVec(), rand(spread * 0.3, spread));
     for (let attempt = 0; attempt < 80; attempt++) {
-      candidate = scale(randomUnitVec(), rand(spread * 0.55, spread));
+      candidate = scale(randomUnitVec(), rand(spread * 0.3, spread));
       let ok = true;
       for (let i = 0; i < existing.length; i++) {
         if (distanceSq(candidate, existing[i]) < minSep2) {
@@ -561,136 +785,205 @@
     return candidate;
   }
 
-  function makeFragment(i, p, existingCenters) {
-    const length = randInt(SIM.minResidues, SIM.maxResidues);
-    const center = sampleCenter(existingCenters, SIM.initialSpread);
+  function placeBackbone(beads, bbIdx, nRes, ss, center) {
+    if (nRes === 0) return;
 
-    const ca = new Array(length);
-    const vel = new Array(length);
-    const forces = new Array(length);
-    const ss = new Array(length);
-    const residues = new Array(length);
+    // Place first BB bead at center
+    const p0 = beads[bbIdx[0]].pos;
+    p0[0] = center[0]; p0[1] = center[1]; p0[2] = center[2];
 
-    const fragment = {
-      id: i,
-      chain: CHAIN_IDS[i % CHAIN_IDS.length],
-      length,
-      ca,
-      vel,
-      forces,
-      ss,
-      residues
-    };
-    seedSecondaryTypes(fragment, p);
+    if (nRes === 1) return;
 
-    const initialCa = buildInitialCaChain(length, center, ss);
-    for (let r = 0; r < length; r++) {
-      ca[r] = initialCa[r];
-      vel[r] = [0, 0, 0];
-      forces[r] = [0, 0, 0];
+    // Build backbone as a chain
+    const dir = randomUnitVec();
+    const bbp = BB_PARAMS[ss[0]];
+    const p1 = beads[bbIdx[1]].pos;
+    p1[0] = p0[0] + dir[0] * bbp.bond.r0;
+    p1[1] = p0[1] + dir[1] * bbp.bond.r0;
+    p1[2] = p0[2] + dir[2] * bbp.bond.r0;
+
+    for (let r = 2; r < nRes; r++) {
+      const ssType = ss[r - 1];
+      const params = BB_PARAMS[ssType];
+      const bondLen = params.bond.r0;
+      const theta = params.angle.theta0;
+
+      const prev2 = beads[bbIdx[r - 2]].pos;
+      const prev1 = beads[bbIdx[r - 1]].pos;
+
+      // Place using ideal angle + random dihedral
+      const bc = normalize(sub(prev1, prev2));
+      let perp = cross(bc, [0, 1, 0]);
+      if (norm(perp) < 1e-6) perp = cross(bc, [1, 0, 0]);
+      perp = normalize(perp);
+      const perp2 = normalize(cross(bc, perp));
+
+      const dih = rand(0, 2 * Math.PI);
+      const sinT = Math.sin(Math.PI - theta);
+      const cosT = Math.cos(Math.PI - theta);
+
+      const newDir = add(
+        scale(bc, cosT),
+        add(
+          scale(perp, sinT * Math.cos(dih)),
+          scale(perp2, sinT * Math.sin(dih))
+        )
+      );
+
+      const pos = beads[bbIdx[r]].pos;
+      pos[0] = prev1[0] + newDir[0] * bondLen;
+      pos[1] = prev1[1] + newDir[1] * bondLen;
+      pos[2] = prev1[2] + newDir[2] * bondLen;
     }
-
-    for (let r = 0; r < length; r++) {
-      residues[r] = RESIDUE_LIBRARY[randInt(0, RESIDUE_LIBRARY.length - 1)];
-    }
-    return fragment;
   }
 
-  function clearForces() {
-    for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length; i++) {
-        frag.forces[i][0] = 0;
-        frag.forces[i][1] = 0;
-        frag.forces[i][2] = 0;
+  function placeSidechains(beads, bbIdx, nRes, resTypes) {
+    for (let r = 0; r < nRes; r++) {
+      const resDef = MARTINI_RESIDUES[resTypes[r]];
+      if (resDef.beads.length <= 1) continue;
+
+      const bbPos = beads[bbIdx[r]].pos;
+
+      // Get backbone tangent
+      let tangent;
+      if (nRes === 1) {
+        tangent = randomUnitVec();
+      } else if (r === 0) {
+        tangent = normalize(sub(beads[bbIdx[1]].pos, bbPos));
+      } else if (r === nRes - 1) {
+        tangent = normalize(sub(bbPos, beads[bbIdx[r - 1]].pos));
+      } else {
+        tangent = normalize(sub(beads[bbIdx[r + 1]].pos, beads[bbIdx[r - 1]].pos));
+      }
+
+      // Perpendicular direction, alternating sides
+      let perp = cross(tangent, [0, 1, 0]);
+      if (norm(perp) < 1e-6) perp = cross(tangent, [1, 0, 0]);
+      perp = normalize(perp);
+      const flip = (r % 2 === 0) ? 1 : -1;
+      perp = scale(perp, flip);
+
+      // Place SC1 at bond length from BB
+      const resStart = bbIdx[r];
+      if (resDef.beads.length >= 2) {
+        const sc1Bond = resDef.bonds.find(function (b) { return b.a === 0 && b.b === 1; });
+        const sc1Dist = sc1Bond ? sc1Bond.r0 : 0.30;
+        const sc1Pos = beads[resStart + 1].pos;
+        sc1Pos[0] = bbPos[0] + perp[0] * sc1Dist;
+        sc1Pos[1] = bbPos[1] + perp[1] * sc1Dist;
+        sc1Pos[2] = bbPos[2] + perp[2] * sc1Dist;
+      }
+
+      // Place subsequent SC beads along the chain
+      for (let b = 2; b < resDef.beads.length; b++) {
+        // Find bond connecting this bead to a previous one
+        const bondDef = resDef.bonds.find(function (bd) { return bd.b === b; });
+        if (!bondDef) {
+          // No direct bond, try to find one where a < b
+          const altBond = resDef.bonds.find(function (bd) { return bd.a === b || bd.b === b; });
+          const parentIdx = altBond ? (altBond.a === b ? altBond.b : altBond.a) : b - 1;
+          const parentPos = beads[resStart + parentIdx].pos;
+          const dist = altBond ? altBond.r0 : 0.27;
+          const jitter = randomUnitVec();
+          const pos = beads[resStart + b].pos;
+          pos[0] = parentPos[0] + jitter[0] * dist;
+          pos[1] = parentPos[1] + jitter[1] * dist;
+          pos[2] = parentPos[2] + jitter[2] * dist;
+        } else {
+          const parentPos = beads[resStart + bondDef.a].pos;
+          const dist = bondDef.r0;
+          // Place roughly continuing from parent direction
+          const jitter = normalize(add(perp, scale(randomUnitVec(), 0.5)));
+          const pos = beads[resStart + b].pos;
+          pos[0] = parentPos[0] + jitter[0] * dist;
+          pos[1] = parentPos[1] + jitter[1] * dist;
+          pos[2] = parentPos[2] + jitter[2] * dist;
+        }
       }
     }
   }
 
-  function addForce(frag, idx, fx, fy, fz) {
-    frag.forces[idx][0] += fx;
-    frag.forces[idx][1] += fy;
-    frag.forces[idx][2] += fz;
+  // ─── Force Computation ───────────────────────────────────────────
+
+  function clearForces() {
+    for (const frag of state.fragments) {
+      for (let i = 0; i < frag.beads.length; i++) {
+        frag.beads[i].force[0] = 0;
+        frag.beads[i].force[1] = 0;
+        frag.beads[i].force[2] = 0;
+      }
+    }
   }
 
-  function capVectorInPlace(vec, maxNorm) {
-    const m2 = vec[0] * vec[0] + vec[1] * vec[1] + vec[2] * vec[2];
-    if (m2 <= maxNorm * maxNorm) return;
-    const inv = maxNorm / Math.sqrt(m2);
-    vec[0] *= inv;
-    vec[1] *= inv;
-    vec[2] *= inv;
+  function applySpringBead(beadA, beadB, K, r0) {
+    const dx = beadB.pos[0] - beadA.pos[0];
+    const dy = beadB.pos[1] - beadA.pos[1];
+    const dz = beadB.pos[2] - beadA.pos[2];
+    const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    if (r < 1e-10) return;
+    const dr = r - r0;
+    const fmag = K * dr / r;
+    beadA.force[0] += fmag * dx;
+    beadA.force[1] += fmag * dy;
+    beadA.force[2] += fmag * dz;
+    beadB.force[0] -= fmag * dx;
+    beadB.force[1] -= fmag * dy;
+    beadB.force[2] -= fmag * dz;
   }
 
-  function applySpring(fragA, i, fragB, j, k, target) {
-    const pa = fragA.ca[i];
-    const pb = fragB.ca[j];
-    const d = sub(pb, pa);
-    const r = norm(d);
-    if (r < 1e-8) return 0;
-    const dr = r - target;
-    const fmag = -k * dr / r;
-    const fx = fmag * d[0];
-    const fy = fmag * d[1];
-    const fz = fmag * d[2];
-
-    addForce(fragA, i, fx, fy, fz);
-    addForce(fragB, j, -fx, -fy, -fz);
-    return 0.5 * k * dr * dr;
-  }
-
-  function applyAngleBend(frag, i, j, k, K, theta0) {
-    const rij = sub(frag.ca[i], frag.ca[j]);
-    const rkj = sub(frag.ca[k], frag.ca[j]);
+  function applyAngleBead(beadI, beadJ, beadK, K, theta0) {
+    const rij = sub(beadI.pos, beadJ.pos);
+    const rkj = sub(beadK.pos, beadJ.pos);
     const rij_len = norm(rij);
     const rkj_len = norm(rkj);
-    if (rij_len < 1e-8 || rkj_len < 1e-8) return 0;
+    if (rij_len < 1e-10 || rkj_len < 1e-10) return;
 
     const cosTheta = clamp(dot(rij, rkj) / (rij_len * rkj_len), -1, 1);
     const theta = Math.acos(cosTheta);
     const dTheta = theta - theta0;
     const sinTheta = Math.sqrt(Math.max(1e-12, 1 - cosTheta * cosTheta));
+    if (sinTheta < 1e-10) return;
 
     const dEdTheta = K * dTheta;
     const st = dEdTheta / sinTheta;
-
     const inv_rij = 1 / rij_len;
     const inv_rkj = 1 / rkj_len;
 
     for (let d = 0; d < 3; d++) {
       const fi = st * (rkj[d] * inv_rkj - rij[d] * inv_rij * cosTheta) * inv_rij;
       const fk = st * (rij[d] * inv_rij - rkj[d] * inv_rkj * cosTheta) * inv_rkj;
-      frag.forces[i][d] += fi;
-      frag.forces[k][d] += fk;
-      frag.forces[j][d] -= fi + fk;
+      beadI.force[d] += fi;
+      beadK.force[d] += fk;
+      beadJ.force[d] -= fi + fk;
     }
-
-    return 0.5 * K * dTheta * dTheta;
   }
 
-  function applyDihedral(frag, i, j, k, l, Kdih, phi0) {
-    const b1 = sub(frag.ca[j], frag.ca[i]);
-    const b2 = sub(frag.ca[k], frag.ca[j]);
-    const b3 = sub(frag.ca[l], frag.ca[k]);
+  function applyProperDihedral(beadI, beadJ, beadK, beadL, n, phi0, Kdih) {
+    const b1 = sub(beadJ.pos, beadI.pos);
+    const b2 = sub(beadK.pos, beadJ.pos);
+    const b3 = sub(beadL.pos, beadK.pos);
 
     const n1 = cross(b1, b2);
     const n2 = cross(b2, b3);
     const n1_len = norm(n1);
     const n2_len = norm(n2);
-    if (n1_len < 1e-8 || n2_len < 1e-8) return 0;
+    if (n1_len < 1e-10 || n2_len < 1e-10) return;
 
     const b2_len = norm(b2);
-    if (b2_len < 1e-8) return 0;
+    if (b2_len < 1e-10) return;
 
     const m1 = cross(n1, normalize(b2));
     const cosPhi = dot(n1, n2) / (n1_len * n2_len);
     const sinPhi = dot(m1, n2) / (n1_len * n2_len);
     const phi = Math.atan2(sinPhi, cosPhi);
 
-    const dEdPhi = Kdih * Math.sin(phi - phi0);
+    // V = K * [1 + cos(n*phi - phi0)]
+    // dV/dphi = -K * n * sin(n*phi - phi0)
+    const dEdPhi = -Kdih * n * Math.sin(n * phi - phi0);
 
     const n1_sq = dot(n1, n1);
     const n2_sq = dot(n2, n2);
-    if (n1_sq < 1e-12 || n2_sq < 1e-12) return 0;
+    if (n1_sq < 1e-14 || n2_sq < 1e-14) return;
 
     const fi = scale(n1, -dEdPhi * b2_len / n1_sq);
     const fl = scale(n2, dEdPhi * b2_len / n2_sq);
@@ -702,350 +995,167 @@
     const fk = sub(scale(fl, dk_b3 - 1), scale(fi, dj_b1));
 
     for (let d = 0; d < 3; d++) {
-      frag.forces[i][d] += fi[d];
-      frag.forces[j][d] += fj[d];
-      frag.forces[k][d] += fk[d];
-      frag.forces[l][d] += fl[d];
+      beadI.force[d] += fi[d];
+      beadJ.force[d] += fj[d];
+      beadK.force[d] += fk[d];
+      beadL.force[d] += fl[d];
     }
-
-    return Kdih * (1 - Math.cos(phi - phi0));
   }
 
-  // Hills-Brooks multi-cosine dihedral: V = sum_n K_n [1 + cos(n*phi + delta_n)]
-  function applyMultiDihedral(frag, i, j, k, l, terms) {
-    const b1 = sub(frag.ca[j], frag.ca[i]);
-    const b2 = sub(frag.ca[k], frag.ca[j]);
-    const b3 = sub(frag.ca[l], frag.ca[k]);
-
-    const n1 = cross(b1, b2);
-    const n2 = cross(b2, b3);
-    const n1_len = norm(n1);
-    const n2_len = norm(n2);
-    if (n1_len < 1e-8 || n2_len < 1e-8) return 0;
-
-    const b2_len = norm(b2);
-    if (b2_len < 1e-8) return 0;
-
-    const m1 = cross(n1, normalize(b2));
-    const cosPhi = dot(n1, n2) / (n1_len * n2_len);
-    const sinPhi = dot(m1, n2) / (n1_len * n2_len);
-    const phi = Math.atan2(sinPhi, cosPhi);
-
-    // Accumulate dV/dphi and V across all cosine terms.
-    let dEdPhi = 0;
-    let potential = 0;
-    for (let t = 0; t < terms.length; t++) {
-      const term = terms[t];
-      dEdPhi += -term.n * term.K * Math.sin(term.n * phi + term.delta);
-      potential += term.K * (1 + Math.cos(term.n * phi + term.delta));
-    }
-
-    const n1_sq = dot(n1, n1);
-    const n2_sq = dot(n2, n2);
-    if (n1_sq < 1e-12 || n2_sq < 1e-12) return 0;
-
-    const fi = scale(n1, -dEdPhi * b2_len / n1_sq);
-    const fl = scale(n2, dEdPhi * b2_len / n2_sq);
-
-    const dj_b1 = dot(b1, b2) / (b2_len * b2_len);
-    const dk_b3 = dot(b3, b2) / (b2_len * b2_len);
-
-    const fj = sub(scale(fi, dj_b1 - 1), scale(fl, dk_b3));
-    const fk = sub(scale(fl, dk_b3 - 1), scale(fi, dj_b1));
-
-    for (let d = 0; d < 3; d++) {
-      frag.forces[i][d] += fi[d];
-      frag.forces[j][d] += fj[d];
-      frag.forces[k][d] += fk[d];
-      frag.forces[l][d] += fl[d];
-    }
-
-    return potential;
-  }
-
-  function applyRepulsiveLJ(fragA, i, fragB, j, d, r2, sigma, eps) {
-    if (r2 < 1e-12) return 0;
-
-    const sigma2 = sigma * sigma;
-    const rc = sigma * Math.pow(2, 1 / 6);
-    const rc2 = rc * rc;
-    if (r2 >= rc2) return 0;
-
-    const invR2 = 1 / r2;
-    const sr2 = sigma2 * invR2;
-    const sr6 = sr2 * sr2 * sr2;
-    const sr12 = sr6 * sr6;
-    const fmag = (24 * eps * (2 * sr12 - sr6)) * invR2;
-
-    const fx = fmag * d[0];
-    const fy = fmag * d[1];
-    const fz = fmag * d[2];
-    addForce(fragA, i, -fx, -fy, -fz);
-    addForce(fragB, j, fx, fy, fz);
-
-    return 4 * eps * (sr12 - sr6) + eps;
-  }
-
-  function applyAttractiveLJ(fragA, i, fragB, j, d, r2, sigma, eps, cut) {
-    if (eps <= 0) return 0;
-    if (r2 < 1e-12 || r2 > cut * cut) return 0;
-
+  function applyLJ(beadA, beadB, sigma, eps, dVec, r2) {
+    // Full 12-6 LJ with shifted potential at cutoff
     const r = Math.sqrt(r2);
-    const wellCenter = sigma;
-    const wellWidth = 2.6;
-    const dr = r - wellCenter;
-    const g = Math.exp(-(dr * dr) / (2 * wellWidth * wellWidth));
-    const dUdr = eps * g * (dr / (wellWidth * wellWidth));
-    const fmag = -dUdr / Math.max(1e-8, r);
+    const cutoff = SIM.ljCutoff;
+    if (r >= cutoff || r < 1e-10) return;
 
-    const fx = fmag * d[0];
-    const fy = fmag * d[1];
-    const fz = fmag * d[2];
-    addForce(fragA, i, -fx, -fy, -fz);
-    addForce(fragB, j, fx, fy, fz);
+    const invR = 1 / r;
+    const sr = sigma * invR;
+    const sr6 = sr * sr * sr * sr * sr * sr;
+    const sr12 = sr6 * sr6;
 
-    return -eps * g;
+    // Shift: compute potential at cutoff to subtract
+    const srC = sigma / cutoff;
+    const srC6 = srC * srC * srC * srC * srC * srC;
+    const srC12 = srC6 * srC6;
+
+    // Force magnitude = -dU/dr = 24*eps*(2*sr12 - sr6)/r
+    const fmag = 24 * eps * (2 * sr12 - sr6) * invR * invR;
+
+    beadA.force[0] -= fmag * dVec[0];
+    beadA.force[1] -= fmag * dVec[1];
+    beadA.force[2] -= fmag * dVec[2];
+    beadB.force[0] += fmag * dVec[0];
+    beadB.force[1] += fmag * dVec[1];
+    beadB.force[2] += fmag * dVec[2];
   }
 
-  function computeMeanEndToEndNorm() {
-    if (!state.fragments.length) return 0;
-    let sum = 0;
-    for (const frag of state.fragments) {
-      if (frag.length < 2) continue;
-      const first = frag.ca[0];
-      const last = frag.ca[frag.length - 1];
-      const r = Math.sqrt(distanceSq(last, first));
-      const maxLen = SIM.bondLength * (frag.length - 1);
-      sum += maxLen > 1e-8 ? r / maxLen : 0;
-    }
-    return sum / state.fragments.length;
+  function applyCoulomb(beadA, beadB, qA, qB, dVec, r2) {
+    const r = Math.sqrt(r2);
+    const cutoff = SIM.ljCutoff;
+    if (r >= cutoff || r < 1e-10) return;
+
+    // Screened Coulomb: U = f * qA * qB / (eps_r * r)
+    // f = 138.935 kJ·nm/(mol·e²) (Coulomb constant)
+    const f = 138.935;
+    const eps_r = SIM.dielectric;
+    const invR = 1 / r;
+    const fmag = f * qA * qB / (eps_r * r2);
+
+    beadA.force[0] -= fmag * dVec[0];
+    beadA.force[1] -= fmag * dVec[1];
+    beadA.force[2] -= fmag * dVec[2];
+    beadB.force[0] += fmag * dVec[0];
+    beadB.force[1] += fmag * dVec[1];
+    beadB.force[2] += fmag * dVec[2];
   }
 
   function computeForces(p) {
     const t0 = performance.now();
     clearForces();
 
-    const secBias = 1.0;
-    const attr = currentAttraction(p);
-    const radiusTarget = targetRadius(p);
-    let potential = 0;
-
+    // 1. Bonded interactions
     for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length - 1; i++) {
-        potential += applySpring(frag, i, frag, i + 1, SIM.bondK, SIM.bondLength);
+      // Springs (harmonic bonds, non-constraint)
+      for (const bond of frag.bonds) {
+        if (bond.isConstraint) continue;
+        applySpringBead(frag.beads[bond.i], frag.beads[bond.j], bond.K, bond.r0);
       }
 
-      for (let i = 0; i < frag.length; i++) {
-        const pi = frag.ca[i];
-        const r = norm(pi);
-        if (r > 1e-10) {
-          const dr = r - radiusTarget;
-          const fmag = -SIM.centerK * dr / r;
-          addForce(frag, i, fmag * pi[0], fmag * pi[1], fmag * pi[2]);
-          potential += 0.5 * SIM.centerK * dr * dr;
-        }
-
-        const bh = SIM.boxHalf;
-        const shell = SIM.wallShell;
-        const wk = SIM.wallK;
-        for (let d = 0; d < 3; d++) {
-          const coord = pi[d];
-          if (coord > bh - shell) {
-            const pen = coord - (bh - shell);
-            frag.forces[i][d] -= wk * pen;
-            potential += 0.5 * wk * pen * pen;
-          } else if (coord < -bh + shell) {
-            const pen = (-bh + shell) - coord;
-            frag.forces[i][d] += wk * pen;
-            potential += 0.5 * wk * pen * pen;
-          }
-          if (pi[d] > bh) pi[d] = bh;
-          if (pi[d] < -bh) pi[d] = -bh;
-        }
+      // Angle bends
+      for (const ang of frag.angles) {
+        applyAngleBead(frag.beads[ang.i], frag.beads[ang.j], frag.beads[ang.k], ang.K, ang.theta0);
       }
 
-      for (let i = 0; i < frag.length - 2; i++) {
-        const target2 = SECONDARY_TARGETS[frag.ss[i]].d2;
-        potential += applySpring(frag, i, frag, i + 2, SIM.secK2 * secBias, target2);
-      }
-
-      for (let i = 0; i < frag.length - 3; i++) {
-        const target3 = SECONDARY_TARGETS[frag.ss[i]].d3;
-        potential += applySpring(frag, i, frag, i + 3, SIM.secK3 * secBias, target3);
-      }
-
-      // SS-dependent angle equilibria (Hills-Brooks):
-      //   helix ~91°, beta ~120°, coil ~105°
-      for (let i = 0; i < frag.length - 2; i++) {
-        const ss = frag.ss[i + 1];
-        const theta0 = SECONDARY_TARGETS[ss].angleTheta0;
-        potential += applyAngleBend(frag, i, i + 1, i + 2, SIM.angleK, theta0);
-      }
-
-      // Multi-cosine dihedral potential (Hills-Brooks):
-      //   V = sum_n K_n [1 + cos(n*phi + delta_n)]
-      for (let i = 0; i < frag.length - 3; i++) {
-        const ss = frag.ss[i];
-        const targets = SECONDARY_TARGETS[ss];
-        potential += applyMultiDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihTerms);
-      }
-
-      // Anti-arc force: penalize uniform curvature over consecutive
-      // windows.  When three consecutive beads i, i+2, i+4 form a
-      // smooth arc (the chord directions are too parallel), push the
-      // midpoint outward to break the arc.
-      for (let i = 0; i < frag.length - 4; i++) {
-        if (frag.ss[i] === "helix" && frag.ss[i + 2] === "helix") continue;
-        const a = frag.ca;
-        const v1 = sub(a[i + 2], a[i]);
-        const v2 = sub(a[i + 4], a[i + 2]);
-        const v1n = norm(v1);
-        const v2n = norm(v2);
-        if (v1n < 1e-8 || v2n < 1e-8) continue;
-        const cosAngle = dot(v1, v2) / (v1n * v2n);
-        // Uniform arc has cosAngle close to 1; we want to penalize
-        // above a threshold and push the midpoint outward (opposite
-        // to the curvature center).
-        if (cosAngle > 0.4) {
-          const strength = 3.5 * (cosAngle - 0.4) * (cosAngle - 0.4);
-          // The curvature center lies in the direction
-          // perpendicular to the chord, on the concave side.
-          // toStart + toEnd points toward the concave side.
-          const toStart = normalize(sub(a[i], a[i + 2]));
-          const toEnd = normalize(sub(a[i + 4], a[i + 2]));
-          const inward = add(toStart, toEnd);
-          const inLen = norm(inward);
-          if (inLen < 1e-8) continue;
-          // Push midpoint AWAY from the arc center (outward)
-          const outward = scale(inward, -strength / inLen);
-          addForce(frag, i + 2, outward[0], outward[1], outward[2]);
-          addForce(frag, i, -0.5 * outward[0], -0.5 * outward[1], -0.5 * outward[2]);
-          addForce(frag, i + 4, -0.5 * outward[0], -0.5 * outward[1], -0.5 * outward[2]);
-        }
-      }
-
-      for (let i = 0; i < frag.length - 4; i++) {
-        const ss = frag.ss[i];
-        const k4 = ss === "helix" ? SIM.secK4_helix : SIM.secK4_other;
-        const d4 = SECONDARY_TARGETS[ss].d4;
-        potential += applySpring(frag, i, frag, i + 4, k4, d4);
-      }
-
-      let cmx = 0, cmy = 0, cmz = 0;
-      for (let i = 0; i < frag.length; i++) {
-        cmx += frag.ca[i][0];
-        cmy += frag.ca[i][1];
-        cmz += frag.ca[i][2];
-      }
-      const invN = 1 / frag.length;
-      cmx *= invN; cmy *= invN; cmz *= invN;
-
-      const kComp = SIM.compactK * (0.65 + 0.75 * smoothstep(p));
-      for (let i = 0; i < frag.length; i++) {
-        const hydro = frag.residues[i].hydro;
-        const w = SIM.compactHydroMin + (1 - SIM.compactHydroMin) * hydro;
-        const dx = frag.ca[i][0] - cmx;
-        const dy = frag.ca[i][1] - cmy;
-        const dz = frag.ca[i][2] - cmz;
-        const fx = -kComp * w * dx;
-        const fy = -kComp * w * dy;
-        const fz = -kComp * w * dz;
-        addForce(frag, i, fx, fy, fz);
-        potential += 0.5 * kComp * w * (dx * dx + dy * dy + dz * dz);
+      // Proper dihedrals
+      for (const dih of frag.dihedrals) {
+        applyProperDihedral(
+          frag.beads[dih.i], frag.beads[dih.j],
+          frag.beads[dih.k], frag.beads[dih.l],
+          dih.n, dih.phi0, dih.K
+        );
       }
     }
 
+    // 2. Non-bonded: spatial hash grid over ALL beads
     const cellSize = SIM.neighborCellSize;
     const invCellSize = 1 / cellSize;
-    const beads = [];
+    const ljCut2 = SIM.ljCutoff * SIM.ljCutoff;
+
+    const allBeads = [];
     const grid = new Map();
-    const strideIntra = Math.max(1, SIM.nonbondStrideIntra | 0);
-    const strideInter = Math.max(1, SIM.nonbondStrideInter | 0);
-    const useFullInter = strideInter <= 1;
-    const attrCut2 = SIM.attrCut * SIM.attrCut;
-    const clashCut2 = SIM.clashDistance * SIM.clashDistance;
 
     for (let fi = 0; fi < state.fragments.length; fi++) {
       const frag = state.fragments[fi];
-      for (let i = 0; i < frag.length; i++) {
-        const p0 = frag.ca[i];
-        const cx = Math.floor(p0[0] * invCellSize);
-        const cy = Math.floor(p0[1] * invCellSize);
-        const cz = Math.floor(p0[2] * invCellSize);
-        const bead = { frag, fi, i, p: p0, residue: frag.residues[i], cx, cy, cz };
-        const index = beads.length;
-        beads.push(bead);
-        const key = `${cx}|${cy}|${cz}`;
+      for (let bi = 0; bi < frag.beads.length; bi++) {
+        const bead = frag.beads[bi];
+        const px = bead.pos[0];
+        const py = bead.pos[1];
+        const pz = bead.pos[2];
+        const cx = Math.floor(px * invCellSize);
+        const cy = Math.floor(py * invCellSize);
+        const cz = Math.floor(pz * invCellSize);
+        const entry = { bead, fi, bi, cx, cy, cz };
+        const idx = allBeads.length;
+        allBeads.push(entry);
+        const key = cx * 73856093 ^ cy * 19349669 ^ cz * 83492791;
         let cell = grid.get(key);
         if (!cell) {
           cell = [];
           grid.set(key, cell);
         }
-        cell.push(index);
+        cell.push(idx);
       }
     }
 
     let clashes = 0;
     let contacts = 0;
     let pairs = 0;
-    let pairComputed = 0;
+    const clashCut2 = 0.3 * 0.3; // nm
 
-    for (let ai = 0; ai < beads.length; ai++) {
-      const a = beads[ai];
+    for (let ai = 0; ai < allBeads.length; ai++) {
+      const a = allBeads[ai];
       for (let dx = -1; dx <= 1; dx++) {
         for (let dy = -1; dy <= 1; dy++) {
           for (let dz = -1; dz <= 1; dz++) {
-            const key = `${a.cx + dx}|${a.cy + dy}|${a.cz + dz}`;
+            const key = (a.cx + dx) * 73856093 ^ (a.cy + dy) * 19349669 ^ (a.cz + dz) * 83492791;
             const cell = grid.get(key);
             if (!cell) continue;
             for (let c = 0; c < cell.length; c++) {
               const bi = cell[c];
               if (bi <= ai) continue;
-              const b = beads[bi];
-              const same = a.fi === b.fi;
-              if (same && Math.abs(a.i - b.i) < 3) continue;
-              if (same && ((a.i % strideIntra) !== 0 || (b.i % strideIntra) !== 0)) continue;
-              if (!same && !useFullInter && ((a.i % strideInter) !== 0 || (b.i % strideInter) !== 0)) continue;
-              pairs += 1;
+              const b = allBeads[bi];
 
-              const dVec = sub(b.p, a.p);
-              const d2 = dot(dVec, dVec);
-              if (d2 < clashCut2) clashes += 1;
-              if (!same && d2 < 100) contacts += 1;
-
-              const sigmaPair = 0.5 * (a.residue.size + b.residue.size);
-              const hydroPair = 0.5 * (a.residue.hydro + b.residue.hydro);
-              const qq = a.residue.charge * b.residue.charge;
-              const electroBias = qq < 0 ? 1.25 : qq > 0 ? 0.82 : 1.0;
-              const sigmaScale = same ? SIM.repSigmaScaleIntra : SIM.repSigmaScaleInter;
-              const repEps = same ? SIM.repEpsIntra : SIM.repEpsInter;
-
-              const repSigma = Math.max(2.8, sigmaPair * sigmaScale);
-              const stericFloor = SIM.stericMinScale * repSigma;
-              const stericFloor2 = stericFloor * stericFloor;
-              if (d2 < stericFloor2) {
-                const dnorm = Math.sqrt(Math.max(1e-12, d2));
-                const push = 0.5 * repEps * (stericFloor - dnorm) / dnorm;
-                const px = push * dVec[0];
-                const py = push * dVec[1];
-                const pz = push * dVec[2];
-                addForce(a.frag, a.i, -px, -py, -pz);
-                addForce(b.frag, b.i, px, py, pz);
-                potential += 0.5 * repEps * (stericFloor - dnorm) * (stericFloor - dnorm);
+              // Skip exclusion pairs
+              if (a.fi === b.fi) {
+                const frag = state.fragments[a.fi];
+                const lo = Math.min(a.bi, b.bi);
+                const hi = Math.max(a.bi, b.bi);
+                if (frag.exclusions.has(lo * 10000 + hi)) continue;
               }
-              const repCut = repSigma * Math.pow(2, 1 / 6);
-              if (d2 < repCut * repCut) {
-                potential += applyRepulsiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, repSigma, repEps);
-                pairComputed += 1;
-              }
-              if (!same || Math.abs(a.i - b.i) > 4) {
-                const seqSep = Math.abs(a.i - b.i);
-                const sameChainBias = same ? (seqSep > 8 ? 1.06 : 1.0) : 0.9;
-                const pairAttr = attr * (0.12 + 0.45 * hydroPair) * electroBias * sameChainBias;
-                if (d2 < attrCut2) {
-                  potential += applyAttractiveLJ(a.frag, a.i, b.frag, b.i, dVec, d2, SIM.attrSigma, pairAttr, SIM.attrCut);
-                  pairComputed += 1;
-                }
+
+              const dVecX = b.bead.pos[0] - a.bead.pos[0];
+              const dVecY = b.bead.pos[1] - a.bead.pos[1];
+              const dVecZ = b.bead.pos[2] - a.bead.pos[2];
+              const r2 = dVecX * dVecX + dVecY * dVecY + dVecZ * dVecZ;
+
+              if (r2 >= ljCut2) continue;
+              pairs++;
+
+              if (r2 < clashCut2) clashes++;
+              if (a.fi !== b.fi && r2 < 0.8 * 0.8) contacts++;
+
+              const dVec = [dVecX, dVecY, dVecZ];
+
+              // LJ interaction
+              const sigma = pairSigma(a.bead.type, b.bead.type);
+              const eps = pairEpsilon(a.bead.type, b.bead.type);
+              applyLJ(a.bead, b.bead, sigma, eps, dVec, r2);
+
+              // Screened Coulomb for charged pairs
+              const qA = beadCharge(a.bead.type);
+              const qB = beadCharge(b.bead.type);
+              if (qA !== 0 && qB !== 0) {
+                applyCoulomb(a.bead, b.bead, qA, qB, dVec, r2);
               }
             }
           }
@@ -1053,44 +1163,66 @@
       }
     }
 
+    // 3. Wall forces (soft boundary)
+    const bh = SIM.boxHalf;
+    const shell = SIM.wallShell;
+    const wk = SIM.wallK;
     for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length; i++) {
-        capVectorInPlace(frag.forces[i], SIM.maxForce);
+      for (const bead of frag.beads) {
+        for (let d = 0; d < 3; d++) {
+          const coord = bead.pos[d];
+          if (coord > bh - shell) {
+            const pen = coord - (bh - shell);
+            bead.force[d] -= wk * pen;
+          } else if (coord < -bh + shell) {
+            const pen = (-bh + shell) - coord;
+            bead.force[d] += wk * pen;
+          }
+          if (bead.pos[d] > bh) bead.pos[d] = bh;
+          if (bead.pos[d] < -bh) bead.pos[d] = -bh;
+        }
       }
     }
 
-    updatePairRate(pairComputed);
+    // 4. Force capping
+    for (const frag of state.fragments) {
+      for (const bead of frag.beads) {
+        capVectorInPlace(bead.force, SIM.maxForce);
+      }
+    }
+
+    let totalBeads = 0;
+    for (const frag of state.fragments) totalBeads += frag.beads.length;
+
     state.lastMetrics = {
+      totalBeads,
       clashes,
       contacts,
-      totalPairs: Math.max(1, pairs),
-      clashRate: clashes / Math.max(1, pairs),
-      meanEndToEndNorm: computeMeanEndToEndNorm()
+      totalPairs: Math.max(1, pairs)
     };
     state.perf.computeMs = ewma(state.perf.computeMs, performance.now() - t0, 0.25);
-
-    return potential;
   }
+
+  // ─── Integrator ──────────────────────────────────────────────────
 
   function enforceBondConstraints(iterations) {
     for (let it = 0; it < iterations; it++) {
       for (const frag of state.fragments) {
-        for (let i = 0; i < frag.length - 1; i++) {
-          const p0 = frag.ca[i];
-          const p1 = frag.ca[i + 1];
-          const d = sub(p1, p0);
-          const r = norm(d);
-          if (r < 1e-8) continue;
-          const corr = 0.5 * (r - SIM.bondLength) / r;
-          const dx = corr * d[0];
-          const dy = corr * d[1];
-          const dz = corr * d[2];
-          p0[0] += dx;
-          p0[1] += dy;
-          p0[2] += dz;
-          p1[0] -= dx;
-          p1[1] -= dy;
-          p1[2] -= dz;
+        for (const bond of frag.bonds) {
+          if (!bond.isConstraint) continue;
+          const a = frag.beads[bond.i];
+          const b = frag.beads[bond.j];
+          const dx = b.pos[0] - a.pos[0];
+          const dy = b.pos[1] - a.pos[1];
+          const dz = b.pos[2] - a.pos[2];
+          const r = Math.sqrt(dx * dx + dy * dy + dz * dz);
+          if (r < 1e-10) continue;
+          const corr = 0.5 * (r - bond.r0) / r;
+          const cx = corr * dx;
+          const cy = corr * dy;
+          const cz = corr * dz;
+          a.pos[0] += cx; a.pos[1] += cy; a.pos[2] += cz;
+          b.pos[0] -= cx; b.pos[1] -= cy; b.pos[2] -= cz;
         }
       }
     }
@@ -1102,16 +1234,19 @@
     const temp = currentTemp(p);
 
     const c = Math.exp(-gamma * dt);
-    const sigmaNoise = Math.sqrt(Math.max(0, temp * (1 - c * c)));
+    // sigma_noise = sqrt(2 * kB * T * gamma * dt) for forces
+    // In BBK-like: noise_vel = sqrt(kB * T * (1 - c^2))
+    const sigmaNoise = Math.sqrt(Math.max(0, SIM.kB * temp * (1 - c * c)));
 
     computeForces(p);
 
     for (const frag of state.fragments) {
-      for (let i = 0; i < frag.length; i++) {
-        const f = frag.forces[i];
-        const vel = frag.vel[i];
-        const pos = frag.ca[i];
+      for (const bead of frag.beads) {
+        const f = bead.force;
+        const vel = bead.vel;
+        const pos = bead.pos;
 
+        // Langevin: v = c*v + dt*F + noise
         vel[0] = c * vel[0] + dt * f[0] + sigmaNoise * gauss();
         vel[1] = c * vel[1] + dt * f[1] + sigmaNoise * gauss();
         vel[2] = c * vel[2] + dt * f[2] + sigmaNoise * gauss();
@@ -1144,294 +1279,11 @@
     enforceBondConstraints(SIM.bondConstraintIters);
   }
 
-  function frameDirection(t, n, b, u, vComp, w) {
-    return normalize(add(add(scale(t, u), scale(n, vComp)), scale(b, w)));
-  }
+  // ─── PDB Output ──────────────────────────────────────────────────
 
-  function rotateNormalBinormal(n, b, angle) {
-    const c = Math.cos(angle);
-    const s = Math.sin(angle);
-    const nr = [
-      c * n[0] + s * b[0],
-      c * n[1] + s * b[1],
-      c * n[2] + s * b[2]
-    ];
-    const br = [
-      -s * n[0] + c * b[0],
-      -s * n[1] + c * b[1],
-      -s * n[2] + c * b[2]
-    ];
-    return { n: normalize(nr), b: normalize(br) };
-  }
-
-  function hash01(a, b, c) {
-    let x = (a * 374761393 + b * 668265263 + c * 2246822519) | 0;
-    x = (x ^ (x >>> 13)) | 0;
-    x = Math.imul(x, 1274126177);
-    x ^= x >>> 16;
-    return (x >>> 0) / 4294967296;
-  }
-
-  function placeFromFrame(origin, t, n, b, u, vComp, w, length) {
-    return add(origin, scale(frameDirection(t, n, b, u, vComp, w), length));
-  }
-
-  function buildSidechainAtoms(resName, atomMap, t, n, b, resSeq, fragId) {
-    const out = [];
-    // Track how many chain-extension bonds have been placed so each
-    // successive bond gets a unique torsional perturbation.
-    let bondIndex = 0;
-
-    function addAtom(name, el, parentName, u, vComp, w, length) {
-      const parent = atomMap[parentName];
-      if (!parent) return;
-      // Apply a deterministic rotamer-like torsional rotation around the
-      // parent→atom axis for chain-extension bonds (CG, CD, CE, NE, CZ…).
-      // This prevents long sidechains from extending in a rigid straight
-      // line.  The rotation samples gauche+, gauche-, and trans-like angles
-      // using a hash of fragment id, residue, and bond depth.
-      let ln = n, lb = b;
-      if (bondIndex > 0) {
-        const h = hash01(fragId + 7, resSeq + 13, bondIndex * 31 + name.charCodeAt(0));
-        // Pick from common rotamer angles: ~60°, ~180°, ~300° (gauche+, trans, gauche-)
-        const rotamerAngles = [60 * DEG, 180 * DEG, 300 * DEG];
-        const angle = rotamerAngles[Math.floor(h * 3)] + (h - 0.5) * 40 * DEG;
-        const rot = rotateNormalBinormal(n, b, angle);
-        ln = rot.n;
-        lb = rot.b;
-      }
-      const pos = placeFromFrame(parent, t, ln, lb, u, vComp, w, length);
-      atomMap[name] = pos;
-      out.push({ name, el, res: resSeq, residue: resName, p: pos });
-      bondIndex += 1;
-    }
-
-    if (resName === "GLY") return out;
-    addAtom("CB", "C", "CA", 0.1, 1.0, 0.35, 1.53);
-
-    switch (resName) {
-      case "ALA":
-        break;
-      case "SER":
-        addAtom("OG", "O", "CB", 0.2, 1.0, 0.1, 1.41);
-        break;
-      case "THR":
-        addAtom("OG1", "O", "CB", 0.2, 1.0, 0.1, 1.41);
-        addAtom("CG2", "C", "CB", -0.55, 0.85, -0.25, 1.53);
-        break;
-      case "VAL":
-        addAtom("CG1", "C", "CB", 0.55, 0.85, 0.22, 1.53);
-        addAtom("CG2", "C", "CB", -0.55, 0.85, -0.22, 1.53);
-        break;
-      case "LEU":
-        addAtom("CG", "C", "CB", 0.25, 0.95, 0.12, 1.53);
-        addAtom("CD1", "C", "CG", 0.65, 0.75, 0.2, 1.53);
-        addAtom("CD2", "C", "CG", -0.65, 0.75, -0.2, 1.53);
-        break;
-      case "ILE":
-        addAtom("CG1", "C", "CB", 0.6, 0.8, 0.22, 1.53);
-        addAtom("CG2", "C", "CB", -0.6, 0.82, -0.18, 1.53);
-        addAtom("CD1", "C", "CG1", 0.62, 0.78, 0.2, 1.53);
-        break;
-      case "ASP":
-        addAtom("CG", "C", "CB", 0.3, 0.95, 0.0, 1.52);
-        addAtom("OD1", "O", "CG", 0.72, 0.5, 0.1, 1.25);
-        addAtom("OD2", "O", "CG", -0.72, 0.5, -0.1, 1.25);
-        break;
-      case "GLU":
-        addAtom("CG", "C", "CB", 0.25, 0.95, 0.0, 1.52);
-        addAtom("CD", "C", "CG", 0.25, 0.95, 0.05, 1.52);
-        addAtom("OE1", "O", "CD", 0.72, 0.5, 0.1, 1.25);
-        addAtom("OE2", "O", "CD", -0.72, 0.5, -0.1, 1.25);
-        break;
-      case "LYS":
-        addAtom("CG", "C", "CB", 0.22, 0.95, 0.0, 1.52);
-        addAtom("CD", "C", "CG", 0.22, 0.95, 0.05, 1.52);
-        addAtom("CE", "C", "CD", 0.2, 0.95, -0.05, 1.52);
-        addAtom("NZ", "N", "CE", 0.18, 0.95, 0.08, 1.47);
-        break;
-      case "ARG":
-        addAtom("CG", "C", "CB", 0.22, 0.95, 0.0, 1.52);
-        addAtom("CD", "C", "CG", 0.22, 0.95, 0.05, 1.52);
-        addAtom("NE", "N", "CD", 0.2, 0.95, 0.0, 1.46);
-        addAtom("CZ", "C", "NE", 0.2, 0.95, 0.0, 1.34);
-        addAtom("NH1", "N", "CZ", 0.72, 0.5, 0.08, 1.33);
-        addAtom("NH2", "N", "CZ", -0.72, 0.5, -0.08, 1.33);
-        break;
-      default:
-        break;
-    }
-
-    return out;
-  }
-
-  function scoreSidechainPlacement(sidechainAtoms, placedAtoms, fragment, residueIndex, resSeq, cutoff) {
-    if (!sidechainAtoms || !sidechainAtoms.length) return 0;
-
-    const maxPenalty = Number.isFinite(cutoff) ? cutoff : Number.POSITIVE_INFINITY;
-    const ca = fragment.ca;
-    const caLen = fragment.length;
-    let penalty = 0;
-
-    for (let s = 0; s < sidechainAtoms.length; s++) {
-      const sp = sidechainAtoms[s].p;
-
-      for (let a = 0; a < placedAtoms.length; a++) {
-        const other = placedAtoms[a];
-        // Skip same-residue atoms; local bonded geometry is intentionally tight.
-        if (other.res === resSeq) continue;
-        const op = other.p;
-        const dx = sp[0] - op[0];
-        const dy = sp[1] - op[1];
-        const dz = sp[2] - op[2];
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < SIDECHAIN_SOFT2) penalty += (SIDECHAIN_SOFT2 - d2);
-        if (d2 < SIDECHAIN_HARD2) penalty += SIDECHAIN_HARD_WEIGHT * (SIDECHAIN_HARD2 - d2);
-        if (penalty >= maxPenalty) return penalty;
-      }
-
-      // Add a light backbone-aware penalty against non-neighbor CA sites.
-      for (let j = 0; j < caLen; j++) {
-        if (Math.abs(j - residueIndex) <= 1) continue;
-        const cp = ca[j];
-        const dx = sp[0] - cp[0];
-        const dy = sp[1] - cp[1];
-        const dz = sp[2] - cp[2];
-        const d2 = dx * dx + dy * dy + dz * dz;
-        if (d2 < SIDECHAIN_SOFT2) penalty += SIDECHAIN_CA_WEIGHT * (SIDECHAIN_SOFT2 - d2);
-        if (penalty >= maxPenalty) return penalty;
-      }
-    }
-
-    return penalty;
-  }
-
-  function rebuildAllAtoms(fragment, includeSidechains) {
-    const atoms = [];
-    const len = fragment.length;
-    let cmx = 0, cmy = 0, cmz = 0;
-    for (let i = 0; i < len; i++) {
-      cmx += fragment.ca[i][0];
-      cmy += fragment.ca[i][1];
-      cmz += fragment.ca[i][2];
-    }
-    const inv = len > 0 ? 1 / len : 0;
-    cmx *= inv; cmy *= inv; cmz *= inv;
-
-    for (let i = 0; i < len; i++) {
-      const residue = fragment.residues[i];
-      const resName = residue.name;
-      const res = i + 1;
-      const ca = fragment.ca[i];
-
-      let t;
-      if (len <= 1) {
-        t = [1, 0, 0];
-      } else if (i === 0) {
-        t = normalize(sub(fragment.ca[1], ca));
-      } else if (i === len - 1) {
-        t = normalize(sub(ca, fragment.ca[len - 2]));
-      } else {
-        t = normalize(sub(fragment.ca[i + 1], fragment.ca[i - 1]));
-      }
-      if (norm(t) < 1e-10) t = [1, 0, 0];
-
-      let curvature = [0, 0, 0];
-      if (len >= 3) {
-        if (i === 0) {
-          const v0 = normalize(sub(fragment.ca[1], fragment.ca[0]));
-          const v1 = normalize(sub(fragment.ca[2], fragment.ca[1]));
-          curvature = sub(v1, v0);
-        } else if (i === len - 1) {
-          const v0 = normalize(sub(fragment.ca[len - 2], fragment.ca[len - 3]));
-          const v1 = normalize(sub(fragment.ca[len - 1], fragment.ca[len - 2]));
-          curvature = sub(v1, v0);
-        } else {
-          const vPrev = normalize(sub(fragment.ca[i], fragment.ca[i - 1]));
-          const vNext = normalize(sub(fragment.ca[i + 1], fragment.ca[i]));
-          curvature = sub(vNext, vPrev);
-        }
-      }
-
-      let outToCom = normalize(sub(ca, [cmx, cmy, cmz]));
-      if (norm(outToCom) < 1e-10) outToCom = [0, 1, 0];
-
-      let n = normalize(curvature);
-      let b = normalize(cross(t, n));
-      if (norm(n) < 1e-4 || Math.abs(dot(n, t)) > 0.92 || norm(b) < 1e-10) {
-        let ref = outToCom;
-        if (Math.abs(dot(ref, t)) > 0.9) ref = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-        b = normalize(cross(t, ref));
-      }
-      if (norm(b) < 1e-10) {
-        const ref = Math.abs(t[1]) < 0.9 ? [0, 1, 0] : [1, 0, 0];
-        b = normalize(cross(t, ref));
-      }
-      n = normalize(cross(b, t));
-      if (dot(n, outToCom) < 0) {
-        n = scale(n, -1);
-        b = scale(b, -1);
-      }
-
-      const N = add(ca, add(scale(t, -1.45), scale(n, 0.55)));
-      const C = add(ca, add(scale(t, 1.52), scale(n, 0.46)));
-      const Odir = normalize(add(scale(t, -0.55), scale(b, 1.0)));
-      const O = add(C, scale(Odir, 1.23));
-
-      atoms.push({ name: "N", el: "N", residue: resName, res, p: N });
-      atoms.push({ name: "CA", el: "C", residue: resName, res, p: ca });
-      atoms.push({ name: "C", el: "C", residue: resName, res, p: C });
-      atoms.push({ name: "O", el: "O", residue: resName, res, p: O });
-
-      if (includeSidechains) {
-        const uN = normalize(sub(N, ca));
-        const uC = normalize(sub(C, ca));
-        // Alternate the out-of-plane component to mimic the ~180° peptide
-        // bond flip that makes real CB atoms point to alternating sides of
-        // the backbone.
-        const flip = (i % 2 === 0) ? 1 : -1;
-        let cbDir = normalize(add(
-          add(scale(uN, 0.58), scale(uC, 0.57)),
-          scale(cross(uN, uC), 0.54 * flip)
-        ));
-
-        let tSc = normalize(sub(C, N));
-        if (norm(tSc) < 1e-10) tSc = t;
-        let bSc = normalize(cross(tSc, cbDir));
-        if (norm(bSc) < 1e-10) bSc = b;
-        let nSc = normalize(cross(bSc, tSc));
-        if (dot(nSc, cbDir) < 0) nSc = scale(nSc, -1);
-
-        const h = hash01(fragment.id + 1, i + 1, resName.charCodeAt(0));
-        const parity = (i & 1) ? 1 : -1;
-        const chiLike = parity * (48 * DEG) + (h - 0.5) * (220 * DEG);
-        let bestSidechain = null;
-        let bestScore = Number.POSITIVE_INFINITY;
-
-        for (let c = 0; c < CHI_CANDIDATES_RAD.length; c++) {
-          const chi = chiLike + CHI_CANDIDATES_RAD[c];
-          const sideFrame = rotateNormalBinormal(nSc, bSc, chi);
-          const atomMap = { N, CA: ca, C, O };
-          const candidate = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res, fragment.id);
-          const score = scoreSidechainPlacement(candidate, atoms, fragment, i, res, bestScore);
-          if (score < bestScore) {
-            bestScore = score;
-            bestSidechain = candidate;
-          }
-        }
-
-        if (!bestSidechain) {
-          const sideFrame = rotateNormalBinormal(nSc, bSc, chiLike);
-          const atomMap = { N, CA: ca, C, O };
-          bestSidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res, fragment.id);
-        }
-
-        for (const atom of bestSidechain) atoms.push(atom);
-      }
-    }
-
-    return atoms;
-  }
+  // Map CG bead names to pseudo-atom names for PDB rendering
+  const BEAD_TO_ATOM = { BB: "CA", SC1: "CB", SC2: "CG", SC3: "CD", SC4: "CE" };
+  const BEAD_TO_ELEMENT = { BB: "C", SC1: "C", SC2: "C", SC3: "C", SC4: "C" };
 
   function atomLine(serial, atomName, residue, chain, resSeq, x, y, z, element) {
     const serialText = String(serial).padStart(5, " ");
@@ -1445,53 +1297,48 @@
     return `ATOM  ${serialText} ${atomText} ${resText} ${chain}${seqText}    ${xx}${yy}${zz}  1.00 25.00           ${elText}`;
   }
 
-  function buildPdb(includeSidechains) {
+  function buildPdb() {
     const t0 = performance.now();
     const lines = [];
     let serial = 1;
     let globalResSeq = 1;
-    const fragmentAtoms = [];
-    let sumX = 0;
-    let sumY = 0;
-    let sumZ = 0;
-    let atomCount = 0;
 
-    for (const fragment of state.fragments) {
-      const atoms = rebuildAllAtoms(fragment, includeSidechains);
-      fragmentAtoms.push({ fragment, atoms, startResSeq: globalResSeq });
-      for (const atom of atoms) {
-        sumX += atom.p[0];
-        sumY += atom.p[1];
-        sumZ += atom.p[2];
-        atomCount += 1;
+    // Compute global COM for centering (in nm)
+    let sumX = 0, sumY = 0, sumZ = 0, totalBeads = 0;
+    for (const frag of state.fragments) {
+      for (const bead of frag.beads) {
+        sumX += bead.pos[0];
+        sumY += bead.pos[1];
+        sumZ += bead.pos[2];
+        totalBeads++;
       }
-      globalResSeq += fragment.length;
     }
+    const cx = totalBeads > 0 ? sumX / totalBeads : 0;
+    const cy = totalBeads > 0 ? sumY / totalBeads : 0;
+    const cz = totalBeads > 0 ? sumZ / totalBeads : 0;
 
-    const cx = atomCount > 0 ? sumX / atomCount : 0;
-    const cy = atomCount > 0 ? sumY / atomCount : 0;
-    const cz = atomCount > 0 ? sumZ / atomCount : 0;
-
-    for (const entry of fragmentAtoms) {
-      for (const atom of entry.atoms) {
-        const resSeq = entry.startResSeq + atom.res - 1;
+    for (const frag of state.fragments) {
+      const startRes = globalResSeq;
+      for (const bead of frag.beads) {
+        const resSeq = startRes + bead.resIdx;
+        const atomName = BEAD_TO_ATOM[bead.name] || "CA";
+        const element = BEAD_TO_ELEMENT[bead.name] || "C";
+        const resName = frag.resTypes[bead.resIdx];
+        // Convert nm → Å for PDB
         lines.push(atomLine(
-          serial,
-          atom.name,
-          atom.residue,
-          entry.fragment.chain,
-          resSeq,
-          atom.p[0] - cx,
-          atom.p[1] - cy,
-          atom.p[2] - cz,
-          atom.el
+          serial, atomName, resName, frag.chain, resSeq,
+          (bead.pos[0] - cx) * 10,
+          (bead.pos[1] - cy) * 10,
+          (bead.pos[2] - cz) * 10,
+          element
         ));
-        serial += 1;
+        serial++;
       }
-      const lastRes = entry.fragment.residues[entry.fragment.length - 1];
-      const endResSeq = entry.startResSeq + entry.fragment.length - 1;
-      lines.push(`TER   ${String(serial).padStart(5, " ")}      ${lastRes.name} ${entry.fragment.chain}${String(endResSeq).padStart(4, " ")}`);
-      serial += 1;
+      const lastResName = frag.resTypes[frag.nRes - 1];
+      const endResSeq = startRes + frag.nRes - 1;
+      lines.push(`TER   ${String(serial).padStart(5, " ")}      ${lastResName} ${frag.chain}${String(endResSeq).padStart(4, " ")}`);
+      serial++;
+      globalResSeq += frag.nRes;
     }
 
     lines.push("END");
@@ -1499,16 +1346,14 @@
     return lines.join("\n");
   }
 
-  async function draw(forceDetail) {
+  // ─── Rendering ───────────────────────────────────────────────────
+
+  async function draw() {
     const drawStart = performance.now();
     const plugin = state.viewer.plugin;
-    const includeSidechains = SIM.renderAtomMode === "full" ||
-      (SIM.renderAtomMode === "mixed" && state.drawCount % SIM.fullAtomRenderEvery === 0);
-    const pdb = buildPdb(includeSidechains);
+    const pdb = buildPdb();
     const previousDataRef = state.activeDataRef;
 
-    // Load new structure — manually replicate loadStructureFromData so we can
-    // capture the root data ref for clean deletion later.
     const dataCell = await plugin.builders.data.rawData(
       { data: pdb, label: `cg-seed-${state.seed}-cycle-${state.cycle}` }
     );
@@ -1529,10 +1374,6 @@
       }
     }
 
-    // Delete the previous data node and its entire subtree (trajectory,
-    // model, structure, representations) from the state tree.  This is
-    // more thorough than hierarchy.remove which only prunes the structure
-    // level and can leave orphaned data / trajectory nodes behind.
     if (previousDataRef) {
       await plugin.state.data.build().delete(previousDataRef).commit();
     }
@@ -1565,13 +1406,15 @@
     try {
       do {
         state.drawQueued = false;
-        await draw(force);
+        await draw();
         state.lastDrawMs = performance.now();
       } while (state.drawQueued);
     } finally {
       state.drawBusy = false;
     }
   }
+
+  // ─── Visual Style ────────────────────────────────────────────────
 
   async function applyIllustrativeStyle() {
     const plugin = state.viewer.plugin;
@@ -1654,7 +1497,7 @@
         snapshot: (scene, camera) => {
           const sphere = scene && scene.boundingSphereVisible ? scene.boundingSphereVisible : null;
           const center = sphere && sphere.center ? sphere.center : [0, 0, 0];
-          const radius = Math.max(18, sphere && Number.isFinite(sphere.radius) ? sphere.radius : SIM.initialSpread);
+          const radius = Math.max(18, sphere && Number.isFinite(sphere.radius) ? sphere.radius : SIM.initialSpread * 10);
           if (camera && typeof camera.getInvariantFocus === "function") {
             return camera.getInvariantFocus(center, radius * 0.75, dir, up);
           }
@@ -1667,7 +1510,7 @@
     } catch (err) {
       try {
         if (plugin.managers && plugin.managers.camera && typeof plugin.managers.camera.reset === "function") {
-          const snapshot = canvas3d.camera.getFocus([0, 0, 0], SIM.initialSpread * 1.2);
+          const snapshot = canvas3d.camera.getFocus([0, 0, 0], SIM.initialSpread * 12);
           plugin.managers.camera.reset(snapshot, 0);
         }
       } catch (fallbackErr) {
@@ -1694,6 +1537,8 @@
   function updateHud() {
   }
 
+  // ─── System Setup ────────────────────────────────────────────────
+
   function reseedSystem(seedOverride) {
     if (Number.isFinite(seedOverride)) state.seed = seedOverride >>> 0;
     else state.seed = (state.seed + 1) >>> 0;
@@ -1703,27 +1548,24 @@
     state.cps = 0;
     state.cpsWindowStartMs = 0;
     state.cpsWindowStartCycle = 0;
-    state.pairWindowStartMs = 0;
-    state.pairWindowCount = 0;
-    state.pairChecksPerSec = 0;
     state.drawCount = 0;
     state.dynamicRenderIntervalMs = SIM.renderIntervalMs;
     state.activeStructures = [];
     state.activeDataRef = null;
     state.fragments = [];
     state.lastMetrics = {
+      totalBeads: 0,
       clashes: 0,
       contacts: 0,
-      totalPairs: 1,
-      clashRate: 0,
-      meanEndToEndNorm: 0
+      totalPairs: 1
     };
     pickAccentColor();
 
     const centers = [];
     for (let i = 0; i < SIM.fragmentCount; i++) {
-      const fragment = makeFragment(i, 0, centers);
-      centers.push(fragment.ca[Math.floor(fragment.length / 2)]);
+      const fragment = makeFragment(i, centers);
+      const midBB = fragment.beads[fragment.bbIdx[Math.floor(fragment.nRes / 2)]];
+      centers.push(midBB.pos.slice());
       state.fragments.push(fragment);
     }
 
@@ -1738,6 +1580,8 @@
     state.cycle += 1;
   }
 
+  // ─── Debug Interface ─────────────────────────────────────────────
+
   function runMetrics(options) {
     const opts = options || {};
     const seeds = Array.isArray(opts.seeds) && opts.seeds.length ? opts.seeds : [11, 17, 23, 29, 37];
@@ -1750,11 +1594,10 @@
       seeds: seeds.length,
       warmupCycles,
       measureCycles,
-      meanClashRate: 0,
       meanClashes: 0,
       meanPairs: 0,
       meanContacts: 0,
-      meanEndToEndNorm: 0,
+      meanTotalBeads: 0,
       perSeed: []
     };
 
@@ -1764,42 +1607,37 @@
         reseedSystem(seed);
         for (let i = 0; i < warmupCycles; i++) integrateFrame();
 
-        let clashRateSum = 0;
         let clashesSum = 0;
         let pairsSum = 0;
         let contactsSum = 0;
-        let endToEndSum = 0;
+        let beadsSum = 0;
         for (let i = 0; i < measureCycles; i++) {
           integrateFrame();
-          clashRateSum += state.lastMetrics.clashRate;
           clashesSum += state.lastMetrics.clashes;
           pairsSum += state.lastMetrics.totalPairs;
           contactsSum += state.lastMetrics.contacts;
-          endToEndSum += state.lastMetrics.meanEndToEndNorm;
+          beadsSum += state.lastMetrics.totalBeads;
         }
 
         const result = {
           seed,
-          meanClashRate: clashRateSum / measureCycles,
           meanClashes: clashesSum / measureCycles,
           meanPairs: pairsSum / measureCycles,
           meanContacts: contactsSum / measureCycles,
-          meanEndToEndNorm: endToEndSum / measureCycles
+          meanTotalBeads: beadsSum / measureCycles
         };
         aggregate.perSeed.push(result);
-        aggregate.meanClashRate += result.meanClashRate;
         aggregate.meanClashes += result.meanClashes;
         aggregate.meanPairs += result.meanPairs;
         aggregate.meanContacts += result.meanContacts;
-        aggregate.meanEndToEndNorm += result.meanEndToEndNorm;
+        aggregate.meanTotalBeads += result.meanTotalBeads;
       }
 
       const inv = 1 / seeds.length;
-      aggregate.meanClashRate *= inv;
       aggregate.meanClashes *= inv;
       aggregate.meanPairs *= inv;
       aggregate.meanContacts *= inv;
-      aggregate.meanEndToEndNorm *= inv;
+      aggregate.meanTotalBeads *= inv;
       return aggregate;
     } finally {
       state.running = wasRunning;
@@ -1812,21 +1650,26 @@
     window.__simDebug = {
       runMetrics,
       snapshot: function () {
+        let totalBeads = 0;
+        for (const frag of state.fragments) totalBeads += frag.beads.length;
         return {
           cycle: state.cycle,
           seed: state.seed,
           running: state.running,
-          metrics: {
-            clashes: state.lastMetrics.clashes,
-            contacts: state.lastMetrics.contacts,
-            totalPairs: state.lastMetrics.totalPairs,
-            clashRate: state.lastMetrics.clashRate,
-            meanEndToEndNorm: state.lastMetrics.meanEndToEndNorm
+          totalBeads,
+          metrics: state.lastMetrics,
+          perf: {
+            drawMs: state.perf.drawMs,
+            computeMs: state.perf.computeMs,
+            buildPdbMs: state.perf.buildPdbMs,
+            renderFps: state.perf.renderFps
           }
         };
       }
     };
   }
+
+  // ─── Main Loop ───────────────────────────────────────────────────
 
   async function loop() {
     if (state.busy) {
@@ -1859,6 +1702,8 @@
       window.setTimeout(loop, SIM.frameMs);
     }
   }
+
+  // ─── Initialization ──────────────────────────────────────────────
 
   async function init() {
     if (!window.molstar || !window.molstar.Viewer) {
