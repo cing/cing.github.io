@@ -1056,15 +1056,34 @@
     return add(origin, scale(frameDirection(t, n, b, u, vComp, w), length));
   }
 
-  function buildSidechainAtoms(resName, atomMap, t, n, b, resSeq) {
+  function buildSidechainAtoms(resName, atomMap, t, n, b, resSeq, fragId) {
     const out = [];
+    // Track how many chain-extension bonds have been placed so each
+    // successive bond gets a unique torsional perturbation.
+    let bondIndex = 0;
 
     function addAtom(name, el, parentName, u, vComp, w, length) {
       const parent = atomMap[parentName];
       if (!parent) return;
-      const pos = placeFromFrame(parent, t, n, b, u, vComp, w, length);
+      // Apply a deterministic rotamer-like torsional rotation around the
+      // parent→atom axis for chain-extension bonds (CG, CD, CE, NE, CZ…).
+      // This prevents long sidechains from extending in a rigid straight
+      // line.  The rotation samples gauche+, gauche-, and trans-like angles
+      // using a hash of fragment id, residue, and bond depth.
+      let ln = n, lb = b;
+      if (bondIndex > 0) {
+        const h = hash01(fragId + 7, resSeq + 13, bondIndex * 31 + name.charCodeAt(0));
+        // Pick from common rotamer angles: ~60°, ~180°, ~300° (gauche+, trans, gauche-)
+        const rotamerAngles = [60 * DEG, 180 * DEG, 300 * DEG];
+        const angle = rotamerAngles[Math.floor(h * 3)] + (h - 0.5) * 40 * DEG;
+        const rot = rotateNormalBinormal(n, b, angle);
+        ln = rot.n;
+        lb = rot.b;
+      }
+      const pos = placeFromFrame(parent, t, ln, lb, u, vComp, w, length);
       atomMap[name] = pos;
       out.push({ name, el, res: resSeq, residue: resName, p: pos });
+      bondIndex += 1;
     }
 
     if (resName === "GLY") return out;
@@ -1273,7 +1292,7 @@
           const chi = chiLike + CHI_CANDIDATES_RAD[c];
           const sideFrame = rotateNormalBinormal(nSc, bSc, chi);
           const atomMap = { N, CA: ca, C, O };
-          const candidate = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
+          const candidate = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res, fragment.id);
           const score = scoreSidechainPlacement(candidate, atoms, fragment, i, res, bestScore);
           if (score < bestScore) {
             bestScore = score;
@@ -1284,7 +1303,7 @@
         if (!bestSidechain) {
           const sideFrame = rotateNormalBinormal(nSc, bSc, chiLike);
           const atomMap = { N, CA: ca, C, O };
-          bestSidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res);
+          bestSidechain = buildSidechainAtoms(resName, atomMap, tSc, sideFrame.n, sideFrame.b, res, fragment.id);
         }
 
         for (const atom of bestSidechain) atoms.push(atom);
