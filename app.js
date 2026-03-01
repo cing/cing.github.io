@@ -82,8 +82,7 @@
     secK3: 5.8,
     secK4_helix: 3.8,
     secK4_other: 1.6,
-    angleK: 8.5,
-    angleTheta0: 101.0 * DEG,
+    angleK: 20,
     centerK: 0.014,
     boxHalf: 45,
     wallK: 12,
@@ -114,10 +113,39 @@
     bondConstraintIters: 6
   };
 
+  // Hills-Brooks calibrated secondary structure targets.
+  // Angle equilibria from PDB statistics: helix ~91°, beta ~120°, coil ~105°.
+  // Dihedral terms use the multi-cosine form from Hills & Brooks (2009):
+  //   V = sum_n  K_n * [1 + cos(n*phi + delta_n)]
+  // represented as arrays of {n, K, delta} objects.
   const SECONDARY_TARGETS = {
-    helix: { d2: 5.45, d3: 5.2, d4: 6.15, dihK: 3.9, dihPhi0: 50 * DEG },
-    beta: { d2: 6.0, d3: 7.8, d4: 9.4, dihK: 0.95, dihPhi0: -160 * DEG },
-    coil: { d2: 6.2, d3: 8.3, d4: 10.5, dihK: 1.2, dihPhi0: 0 }
+    helix: {
+      d2: 5.45, d3: 5.2, d4: 6.15,
+      angleTheta0: 91 * DEG,
+      dihTerms: [
+        { n: 2, K: 1.2, delta: 0.17 },
+        { n: 3, K: 1.2, delta: 0.17 },
+        { n: 4, K: 1.2, delta: 0.17 }
+      ]
+    },
+    beta: {
+      d2: 6.4, d3: 9.0, d4: 11.8,
+      angleTheta0: 120 * DEG,
+      dihTerms: [
+        { n: 1, K: 0.45, delta: -0.35 },
+        { n: 3, K: 0.6, delta: -0.35 }
+      ]
+    },
+    coil: {
+      d2: 6.2, d3: 8.3, d4: 10.5,
+      angleTheta0: 105 * DEG,
+      dihTerms: [
+        { n: 1, K: 0.2, delta: 0 },
+        { n: 2, K: 0.2, delta: 0 },
+        { n: 3, K: 0.2, delta: 0 },
+        { n: 4, K: 0.2, delta: 0 }
+      ]
+    }
   };
 
   const RESIDUE_LIBRARY = [
@@ -467,7 +495,7 @@
     const ca = new Array(length);
     const frame = randomFrame();
     const bond = SIM.bondLength;
-    const theta = SIM.angleTheta0;
+    const theta = SECONDARY_TARGETS.coil.angleTheta0;
     const seedRadius = Math.max(13.0, Math.min(20.0, 0.34 * length * bond));
 
     ca[0] = add(center, scale(frame.x, rand(-1.2, 1.2)));
@@ -683,6 +711,58 @@
     return Kdih * (1 - Math.cos(phi - phi0));
   }
 
+  // Hills-Brooks multi-cosine dihedral: V = sum_n K_n [1 + cos(n*phi + delta_n)]
+  function applyMultiDihedral(frag, i, j, k, l, terms) {
+    const b1 = sub(frag.ca[j], frag.ca[i]);
+    const b2 = sub(frag.ca[k], frag.ca[j]);
+    const b3 = sub(frag.ca[l], frag.ca[k]);
+
+    const n1 = cross(b1, b2);
+    const n2 = cross(b2, b3);
+    const n1_len = norm(n1);
+    const n2_len = norm(n2);
+    if (n1_len < 1e-8 || n2_len < 1e-8) return 0;
+
+    const b2_len = norm(b2);
+    if (b2_len < 1e-8) return 0;
+
+    const m1 = cross(n1, normalize(b2));
+    const cosPhi = dot(n1, n2) / (n1_len * n2_len);
+    const sinPhi = dot(m1, n2) / (n1_len * n2_len);
+    const phi = Math.atan2(sinPhi, cosPhi);
+
+    // Accumulate dV/dphi and V across all cosine terms.
+    let dEdPhi = 0;
+    let potential = 0;
+    for (let t = 0; t < terms.length; t++) {
+      const term = terms[t];
+      dEdPhi += -term.n * term.K * Math.sin(term.n * phi + term.delta);
+      potential += term.K * (1 + Math.cos(term.n * phi + term.delta));
+    }
+
+    const n1_sq = dot(n1, n1);
+    const n2_sq = dot(n2, n2);
+    if (n1_sq < 1e-12 || n2_sq < 1e-12) return 0;
+
+    const fi = scale(n1, -dEdPhi * b2_len / n1_sq);
+    const fl = scale(n2, dEdPhi * b2_len / n2_sq);
+
+    const dj_b1 = dot(b1, b2) / (b2_len * b2_len);
+    const dk_b3 = dot(b3, b2) / (b2_len * b2_len);
+
+    const fj = sub(scale(fi, dj_b1 - 1), scale(fl, dk_b3));
+    const fk = sub(scale(fl, dk_b3 - 1), scale(fi, dj_b1));
+
+    for (let d = 0; d < 3; d++) {
+      frag.forces[i][d] += fi[d];
+      frag.forces[j][d] += fj[d];
+      frag.forces[k][d] += fk[d];
+      frag.forces[l][d] += fl[d];
+    }
+
+    return potential;
+  }
+
   function applyRepulsiveLJ(fragA, i, fragB, j, d, r2, sigma, eps) {
     if (r2 < 1e-12) return 0;
 
@@ -794,22 +874,20 @@
         potential += applySpring(frag, i, frag, i + 3, SIM.secK3 * secBias, target3);
       }
 
+      // SS-dependent angle equilibria (Hills-Brooks):
+      //   helix ~91°, beta ~120°, coil ~105°
       for (let i = 0; i < frag.length - 2; i++) {
-        potential += applyAngleBend(frag, i, i + 1, i + 2, SIM.angleK, SIM.angleTheta0);
+        const ss = frag.ss[i + 1];
+        const theta0 = SECONDARY_TARGETS[ss].angleTheta0;
+        potential += applyAngleBend(frag, i, i + 1, i + 2, SIM.angleK, theta0);
       }
 
+      // Multi-cosine dihedral potential (Hills-Brooks):
+      //   V = sum_n K_n [1 + cos(n*phi + delta_n)]
       for (let i = 0; i < frag.length - 3; i++) {
         const ss = frag.ss[i];
         const targets = SECONDARY_TARGETS[ss];
-        // For coil regions, alternate the dihedral target sign so
-        // consecutive residues don't all bend the same way.  This
-        // breaks the uniform-curvature arc that forms when compaction
-        // forces dominate.
-        let phi0 = targets.dihPhi0;
-        if (ss === "coil") {
-          phi0 = (i % 2 === 0 ? 1 : -1) * 65 * DEG;
-        }
-        potential += applyDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihK, phi0);
+        potential += applyMultiDihedral(frag, i, i + 1, i + 2, i + 3, targets.dihTerms);
       }
 
       // Anti-arc force: penalize uniform curvature over consecutive
